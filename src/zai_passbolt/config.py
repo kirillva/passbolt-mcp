@@ -31,6 +31,8 @@ class ServiceConfig:
     enabled: bool = True
     rate_limit: int = 10
     max_concurrency: int = 1
+    # Operator opt-in: metadata-only vault reads skip the sliding per-minute request quota.
+    rate_limit_exempt_read_only: bool = False
 
     def __post_init__(self):
         if not all(
@@ -49,7 +51,12 @@ class ServiceConfig:
                 raise ValueError("policy exceeds original default ceiling")
         if not all(
             isinstance(v, bool)
-            for v in (self.enabled, self.passbolt_write_enabled, self.passbolt_use_enabled)
+            for v in (
+                self.enabled,
+                self.passbolt_write_enabled,
+                self.passbolt_use_enabled,
+                self.rate_limit_exempt_read_only,
+            )
         ):
             raise ValueError("boolean runtime policy required")
         if self.passbolt_share_elicitation not in {"auto", "required", "off"}:
@@ -98,5 +105,6 @@ class ServiceConfig:
             passbolt_use_enabled=flag("PASSBOLT_USE_ENABLED"),
             enabled=flag("PASSBOLT_ENABLED", "true"),
             rate_limit=int(os.environ.get("PASSBOLT_RATE_LIMIT", "10")),
+            rate_limit_exempt_read_only=flag("PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY"),
             passbolt_selection_ttl_seconds=int(os.environ.get("PASSBOLT_SELECTION_TTL", "600")),
         )

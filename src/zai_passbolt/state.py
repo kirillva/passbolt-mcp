@@ -289,7 +289,13 @@ class StateStore:
                 (self.account, execution, str(actor), tool, digest, now),
             )
 
-    def admit(self, actor):
+    def admit(self, actor, *, counts_toward_quota=True):
+        """Admit one vault request.
+
+        The cooldown always applies: it is a provider 429, timeout or transport failure that
+        the vault asked us to respect. Only the sliding 60s request window can be skipped,
+        and only for operator-exempt metadata reads (ServiceConfig.rate_limit_exempt_read_only).
+        """
         vault = self.vault(actor)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -297,11 +303,15 @@ class StateStore:
             cooldown = db.execute(
                 "SELECT until_time FROM cooldowns WHERE account=? AND vault=?", (self.account, vault)
             ).fetchone()
+            if cooldown and cooldown[0] > now:
+                raise ProviderAdmissionDenied("vault is cooling down", retry_after_seconds=60)
+            if not counts_toward_quota:
+                return
             count = db.execute(
                 "SELECT COUNT(*) FROM attempts WHERE account=? AND vault=? AND started>?",
                 (self.account, vault, now - 60),
             ).fetchone()[0]
-            if (cooldown and cooldown[0] > now) or count >= self.config.rate_limit:
+            if count >= self.config.rate_limit:
                 raise ProviderAdmissionDenied("vault request quota reached", retry_after_seconds=60)
             db.execute("INSERT INTO attempts VALUES(?,?,?)", (self.account, vault, now))
 

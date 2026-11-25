@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY` (default `false`): operator opt-in that frees metadata-only
+  vault reads (`passbolt_search`, `passbolt_directory`, `passbolt_list_folders`, `passbolt_status`) from
+  the sliding 60-second request quota. The provider-failure cooldown (HTTP 429, timeout, transport
+  error) and the single in-flight lease still apply, and every write or secret-use path keeps counting.
+
 ## 0.7.0
 
 - Sinks: the delivery target (host, port, path/database) is derived from the Passbolt resource URI;

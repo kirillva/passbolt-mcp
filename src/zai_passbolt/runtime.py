@@ -40,10 +40,19 @@ WRITE_TOOLS = frozenset(
 )
 
 
+# Metadata-only vault reads: policy-filtered metadata, no secret and no selection state.
+# With PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY they skip the sliding per-minute request quota;
+# the provider-failure cooldown and the single in-flight lease still apply to them.
+READ_ONLY_VAULT_TOOLS = frozenset(
+    {"passbolt_status", "passbolt_search", "passbolt_directory", "passbolt_list_folders"}
+)
+
+
 @dataclass(frozen=True)
 class CallState:
     execution_id: str
     principal_id: str
+    tool: str = ""
 
 
 class _DispatchAdmissionDenied(ProviderAdmissionDenied):
@@ -51,15 +60,22 @@ class _DispatchAdmissionDenied(ProviderAdmissionDenied):
 
 
 class StandaloneHttp(JsonHttpClient):
-    """Every initial request and retry shares the durable vault quota."""
+    """Every initial request and retry shares the durable vault quota, except operator-exempt reads."""
 
     def __init__(self, runtime):
         super().__init__(timeout=30, max_response_bytes=8 * 1024 * 1024)
         self.runtime = runtime
 
+    def _counts_toward_quota(self, call) -> bool:
+        """Metadata reads are exempt only when the operator lifted their request quota."""
+        if not self.runtime.config.rate_limit_exempt_read_only:
+            return True
+        return getattr(call, "tool", "") not in READ_ONLY_VAULT_TOOLS
+
     async def _admit_attempt(self, attempt):
+        call = self.runtime.state.get()
         try:
-            self.runtime.store.admit(self.runtime.state.get().principal_id)
+            self.runtime.store.admit(call.principal_id, counts_toward_quota=self._counts_toward_quota(call))
         except ProviderAdmissionDenied as exc:
             raise _DispatchAdmissionDenied(
                 "local HTTP admission denied", retry_after_seconds=exc.retry_after_seconds
@@ -189,7 +205,7 @@ class Runtime:
                 raise ValueError("request exceeds bounded input size")
             self.store.begin(execution, actor, tool, request_hash({"tool": tool, "arguments": arguments}))
             began = True
-            token = self.state.set(CallState(execution, actor))
+            token = self.state.set(CallState(execution, actor, tool))
             async with asyncio.timeout(300):
                 result = await factory()
             outcome = "success"

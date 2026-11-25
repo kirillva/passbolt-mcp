@@ -140,10 +140,12 @@ class FixtureAdapter:
 class Capture:
     def __init__(self):
         self.functions = {}
+        self.options = {}
 
     def tool(self, **options):
         def register(function):
             self.functions[function.__name__] = function
+            self.options[function.__name__] = options
             return function
 
         return register
