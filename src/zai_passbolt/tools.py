@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -82,6 +84,9 @@ def register_tools(server: Any, runtime: Any) -> None:
         resource_id: str | None = None,
         domain_decision: str | None = None,
         sink_ref: str | None = None,
+        job_sha256: str | None = None,
+        target_host: str | None = None,
+        target_port: int | None = None,
     ) -> None:
         access = current_access()
         safe_resource_id: str | None = None
@@ -95,6 +100,21 @@ def register_tools(server: Any, runtime: Any) -> None:
             if isinstance(sink_ref, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", sink_ref)
             else None
         )
+        safe_job_sha256 = (
+            job_sha256 if isinstance(job_sha256, str) and re.fullmatch(r"[0-9a-f]{64}", job_sha256) else None
+        )
+        safe_target_host = (
+            target_host
+            if isinstance(target_host, str) and re.fullmatch(r"[a-z0-9.:-]{1,253}", target_host)
+            else None
+        )
+        safe_target_port = (
+            target_port
+            if isinstance(target_port, int)
+            and not isinstance(target_port, bool)
+            and 1 <= target_port <= 65_535
+            else None
+        )
         vault_profile: str | None = None
         binding = await store.provider_binding(access.principal_id, "passbolt")
         if binding is not None:
@@ -104,15 +124,18 @@ def register_tools(server: Any, runtime: Any) -> None:
                 vault_profile = None
         await store.record_passbolt_audit(
             PassboltAuditRecord(
-                access.principal_id,
-                current_request_id(),
-                scope,
-                action,
-                outcome,
-                safe_resource_id,
-                domain_decision,
-                safe_sink_ref,
-                vault_profile,
+                principal_id=access.principal_id,
+                request_id=current_request_id(),
+                scope=scope,
+                action=action,
+                outcome=outcome,
+                resource_id=safe_resource_id,
+                domain_decision=domain_decision,
+                sink_ref=safe_sink_ref,
+                vault_profile=vault_profile,
+                job_sha256=safe_job_sha256,
+                target_host=safe_target_host,
+                target_port=safe_target_port,
             )
         )
 
@@ -516,10 +539,8 @@ def register_tools(server: Any, runtime: Any) -> None:
     @server.tool(auth=require_scopes("passbolt:read"), annotations=VAULT_READ_ONLY)
     async def passbolt_search(query: str, target_url: str | None = None, limit: int = 20) -> dict[str, Any]:
         """Search only v5 metadata decrypted inside server custody."""
-        adapter, policy, resources, _folders, _vault_profile = await _passbolt_access_policy()
-        normalized_target = PassboltAdapter.validate_search(query, target_url, limit)[1]
-        if normalized_target is not None and not policy.permits_domain(normalized_target):
-            raise PermissionError("Passbolt target domain policy denied")
+        adapter, _policy, resources, _folders, _vault_profile = await _passbolt_access_policy()
+        PassboltAdapter.validate_search(query, target_url, limit)
         try:
             result = await _provider_read(
                 "passbolt",
@@ -577,19 +598,21 @@ def register_tools(server: Any, runtime: Any) -> None:
         return result
 
     @server.tool(auth=require_scopes("passbolt:read"), annotations=VAULT_SELECT)
-    async def passbolt_select(target_url: str, query: str = "", limit: int = 10) -> dict[str, Any]:
-        """Bind a safe metadata selection to this principal and exact target URL."""
-        adapter, policy, resources, _folders, vault_profile = await _passbolt_access_policy()
-        normalized_target = PassboltAdapter.validate_select(target_url, query, limit)[0]
-        if not policy.permits_domain(normalized_target):
-            raise PermissionError("Passbolt target domain policy denied")
+    async def passbolt_select(
+        target_url: str | None = None, query: str = "", limit: int = 10
+    ) -> dict[str, Any]:
+        """Bind a safe metadata selection to this principal. The target is taken from the record URI."""
+        adapter, _policy, resources, _folders, vault_profile = await _passbolt_access_policy()
+        normalized_target = (
+            PassboltAdapter.validate_select(target_url, query, limit)[0] if target_url is not None else ""
+        )
         try:
             result = await _provider_read(
                 "passbolt",
                 "select",
                 {"target_url": target_url, "query": query, "limit": limit},
                 lambda: adapter.select(target_url, query, limit, allowed_resource_ids=resources),
-                validate=lambda: PassboltAdapter.validate_select(target_url, query, limit),
+                validate=lambda: None,
             )
             resource = result.get("resource")
             selection_id: str | None = None
@@ -602,9 +625,9 @@ def register_tools(server: Any, runtime: Any) -> None:
                         str(resource["resource_id"]),
                         str(resource.get("uri")) if resource.get("uri") else None,
                         str(resource.get("username")) if resource.get("username") else None,
-                        PassboltAdapter.validate_select(target_url, query, limit)[0],
+                        normalized_target,
                         bool(result.get("domain_match")),
-                        str(result.get("domain_reason") or "host_mismatch"),
+                        str(result.get("domain_reason") or "no_target_hint"),
                         expires_at=datetime.now(UTC)
                         + timedelta(seconds=settings.passbolt_selection_ttl_seconds),
                         vault_profile=vault_profile,
@@ -614,7 +637,7 @@ def register_tools(server: Any, runtime: Any) -> None:
             public = {
                 "resource": resource,
                 "domain_match": bool(result.get("domain_match")),
-                "confirmation_required": bool(result.get("confirmation_required")),
+                "confirmation_required": False,
                 "selection_id": selection_id,
             }
         except Exception:
@@ -625,7 +648,7 @@ def register_tools(server: Any, runtime: Any) -> None:
             "select",
             "success",
             resource_id=str(resource.get("resource_id")) if isinstance(resource, dict) else None,
-            domain_decision="match" if public["domain_match"] else "confirmation_required",
+            domain_decision="hint_match" if public["domain_match"] else "no_target_hint",
         )
         return public
 
@@ -1148,10 +1171,15 @@ def register_tools(server: Any, runtime: Any) -> None:
     async def passbolt_use_secret(
         selection_id: str,
         sink_ref: str,
-        target_url: str | None = None,
+        job_ref: str | None = None,
         approval_id: str | None = None,
+        target_url: str | None = None,
     ) -> dict[str, Any]:
-        """Deliver a selected secret to one registered server-local sink only."""
+        """Deliver a selected secret to one sink, using the URI stored in the Passbolt record.
+
+        ``target_url`` is accepted for compatibility and ignored: host, port and path
+        always come from the resource URI, so a caller cannot redirect the credential.
+        """
         if not settings.passbolt_use_enabled:
             await _passbolt_audit("passbolt:use", "use_secret", "disabled", sink_ref=sink_ref)
             raise PermissionError("Passbolt secret-use runtime is not enabled")
@@ -1179,38 +1207,57 @@ def register_tools(server: Any, runtime: Any) -> None:
                 "passbolt:use", "use_secret", "resource_policy_denied", resource_id=selection.resource_id
             )
             raise PermissionError("Passbolt resource policy denied")
-        effective_target = target_url or selection.target_url
-        normalized_target = PassboltAdapter.validate_select(effective_target, "", 1)[0]
-        if not policy.permits_domain(normalized_target):
+        try:
+            target = adapter.sinks.target(sink_ref, selection.resource_uri)
+            approval_mode = adapter.sinks.approval_mode(sink_ref)
+        except (PermissionError, ProviderError):
             await _passbolt_audit(
                 "passbolt:use",
                 "use_secret",
-                "domain_policy_denied",
+                "sink_configuration_invalid",
                 resource_id=selection.resource_id,
                 sink_ref=sink_ref,
             )
-            raise PermissionError("Passbolt target domain policy denied")
-        if normalized_target != selection.target_url:
+            raise
+        if adapter.sinks.requires_job(sink_ref) and not job_ref:
             await _passbolt_audit(
                 "passbolt:use",
                 "use_secret",
-                "target_binding_mismatch",
+                "job_required",
                 resource_id=selection.resource_id,
                 sink_ref=sink_ref,
+                target_host=target["host"],
+                target_port=target["port"],
             )
-            raise PermissionError("Passbolt target_url does not match the bound selection")
-        decision = adapter.domain_decision(selection.resource_uri, normalized_target)
+            raise PermissionError("Passbolt sink requires a job_ref")
+        job_payload: dict[str, Any] | None = None
+        job_sha256: str | None = None
+        if job_ref:
+            try:
+                job_payload, job_sha256 = await asyncio.to_thread(
+                    adapter.sinks.load_job, sink_ref, job_ref
+                )
+            except (PermissionError, ProviderError):
+                await _passbolt_audit(
+                    "passbolt:use",
+                    "use_secret",
+                    "invalid_job",
+                    resource_id=selection.resource_id,
+                    sink_ref=sink_ref,
+                )
+                raise
         digest = request_hash(
             {
                 "provider": "passbolt",
                 "operation": "use_secret",
                 "selection_id": selection_id,
                 "resource_id": selection.resource_id,
-                "target_url": normalized_target,
+                "target_uri": target["uri"],
                 "sink_ref": sink_ref,
+                "job_sha256": job_sha256,
             }
         )
-        if not decision.matches:
+        if approval_mode == "always":
             if not approval_id:
                 result = {
                     "delivered_to_sink": False,
@@ -1222,13 +1269,29 @@ def register_tools(server: Any, runtime: Any) -> None:
                     "use_secret_prepare",
                     "prepared",
                     resource_id=selection.resource_id,
-                    domain_decision="confirmation_required",
                     sink_ref=sink_ref,
+                    job_sha256=job_sha256,
+                    target_host=target["host"],
+                    target_port=target["port"],
                 )
                 return result
             approval = await _passbolt_matching_approval("use_secret", digest, approval_id)
             if not await store.consume_approval(approval):
                 raise PermissionError("Passbolt approval was already consumed")
+        if job_ref:
+            current_payload, current_sha256 = await asyncio.to_thread(
+                adapter.sinks.load_job, sink_ref, job_ref
+            )
+            if current_sha256 != job_sha256:
+                await _passbolt_audit(
+                    "passbolt:use",
+                    "use_secret",
+                    "job_changed",
+                    resource_id=selection.resource_id,
+                    sink_ref=sink_ref,
+                )
+                raise PermissionError("Passbolt job changed after preparation")
+            job_payload = current_payload
         if not await store.consume_passbolt_selection(identifier, access.principal_id):
             await _passbolt_audit(
                 "passbolt:use",
@@ -1243,8 +1306,11 @@ def register_tools(server: Any, runtime: Any) -> None:
             return await adapter.use_secret(
                 resource_id=selection.resource_id,
                 sink_ref=sink_ref,
-                target_url=normalized_target,
+                resource_uri=selection.resource_uri,
                 username=selection.username,
+                target=target,
+                job=job_payload,
+                job_sha256=job_sha256,
             )
 
         try:
@@ -1260,16 +1326,25 @@ def register_tools(server: Any, runtime: Any) -> None:
                 "use_secret",
                 "error",
                 resource_id=selection.resource_id,
-                domain_decision="match" if decision.matches else "mismatch_confirmed",
+                domain_decision="record_uri",
                 sink_ref=sink_ref,
+                job_sha256=job_sha256,
+                target_host=target["host"],
+                target_port=target["port"],
             )
             raise
+        if job_ref:
+            with suppress(OSError):
+                await asyncio.to_thread(adapter.sinks.archive_job, sink_ref, job_ref)
         await _passbolt_audit(
             "passbolt:use",
             "use_secret",
             "delivered",
             resource_id=selection.resource_id,
-            domain_decision="match" if decision.matches else "mismatch_confirmed",
+            domain_decision="record_uri",
             sink_ref=sink_ref,
+            job_sha256=job_sha256,
+            target_host=target["host"],
+            target_port=target["port"],
         )
         return {"delivered_to_sink": bool(result.get("delivered_to_sink"))}

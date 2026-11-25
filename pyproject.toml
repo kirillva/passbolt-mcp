@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zai-passbolt-mcp"
-version = "0.6.0"
+version = "0.7.0"
 description = "Find, manage and use Passbolt secrets from an AI assistant without returning passwords"
 readme = "README.md"
 license = "LicenseRef-ZAI-ONE"
@@ -41,6 +41,10 @@ line-length = 110
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/sinks/login_fill.py" = ["E501"]  # embedded JavaScript
+"examples/sinks/passbolt_sinkkit/executors/web.py" = ["E501"]  # embedded JavaScript
 
 [project.urls]
 Homepage = "https://github.com/zai-one/passbolt-mcp"

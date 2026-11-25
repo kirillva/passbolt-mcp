@@ -33,12 +33,9 @@ def _private_directory(path: Path) -> bool:
 
 
 def _validate_envelope(payload: Any) -> None:
-    if not isinstance(payload, dict) or set(payload) != {
-        "resource_id",
-        "username",
-        "password",
-        "target_url",
-    }:
+    required = {"resource_id", "username", "password", "target_url"}
+    optional = {"target", "job", "job_sha256"}
+    if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - optional:
         raise ValueError("invalid envelope")
     UUID(str(payload["resource_id"]))
     username = payload["username"]
@@ -61,6 +58,9 @@ def _validate_envelope(payload: Any) -> None:
             or parsed.fragment
         ):
             raise ValueError("invalid target")
+    resolved = payload.get("target")
+    if resolved is not None and not isinstance(resolved, dict):
+        raise ValueError("invalid resolved target")
 
 
 def consume(raw_path: str) -> None:

@@ -188,6 +188,28 @@ class PassboltAccessPolicy:
         return self.folder_scope == "all" or folder_id in self.folder_ids | created
 
 
+def _base_url(value: str, field: str) -> str:
+    """Validate the provider base URL.
+
+    HTTPS is required unless the operator explicitly opts into plain HTTP with
+    PASSBOLT_ALLOW_INSECURE_HTTP=1 (trusted isolated network). The opt-in never
+    applies to sink or probe URLs, which stay HTTPS-only.
+    """
+    if os.environ.get("PASSBOLT_ALLOW_INSECURE_HTTP", "").strip() == "1":
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            return normalized
+    return _https_url(value, field)
+
+
 def _https_url(value: str, field: str) -> str:
     normalized = value.strip().rstrip("/")
     parsed = urlsplit(normalized)
@@ -256,6 +278,85 @@ def _origin(value: str | None) -> str | None:
     host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
     authority_host = f"[{host}]" if ":" in host else host
     return authority_host if port in (None, 443) else f"{authority_host}:{port}"
+
+
+_JOB_REF_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_DATABASE_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_$.-]{0,62}")
+_SINK_APPROVAL_MODES = frozenset({"never", "always"})
+
+
+def _bundle_digest(directory: Path) -> str:
+    """Hash the shared sink package so one pin covers every imported module."""
+    try:
+        info = directory.lstat()
+    except OSError as exc:
+        raise ProviderError("Passbolt sink bundle is unavailable") from exc
+    if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        raise ProviderError("Passbolt sink bundle is unsafe")
+    digest = hashlib.sha256()
+    files = sorted(
+        path
+        for path in directory.rglob("*.py")
+        if "__pycache__" not in path.relative_to(directory).parts
+    )
+    if not files:
+        raise ProviderError("Passbolt sink bundle is empty")
+    for path in files:
+        file_info = path.lstat()
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(file_info.st_mode)
+            or not _trusted_owner(file_info.st_uid)
+            or not _not_group_writable(file_info.st_mode)
+        ):
+            raise ProviderError("Passbolt sink bundle is unsafe")
+        digest.update(path.relative_to(directory).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _sink_target(
+    uri: str | None,
+    *,
+    default_port: int,
+    default_database: str | None,
+) -> dict[str, Any]:
+    """Derive the connection target from the URI stored in the Passbolt resource.
+
+    The URI is the only source of the target: callers cannot override host, port
+    or database. An explicit URI port wins; otherwise the sink's protocol default
+    applies (443 web, 5432 postgres, 22 ssh).
+    """
+    if not uri:
+        raise ProviderError("Passbolt resource has no URI; the sink target cannot be derived")
+    try:
+        normalized = _https_url(uri, "resource_uri")
+    except ValueError as exc:
+        raise ProviderError("Passbolt resource URI is invalid") from exc
+    parsed = urlsplit(normalized)
+    if parsed.hostname is None:
+        raise ProviderError("Passbolt resource URI has no host")
+    try:
+        port = parsed.port if parsed.port is not None else default_port
+    except ValueError as exc:
+        raise ProviderError("Passbolt resource URI has an invalid port") from exc
+    if not 1 <= port <= 65_535:
+        raise ProviderError("Passbolt resource URI has an invalid port")
+    path = parsed.path or "/"
+    database: str | None = None
+    if default_database is not None:
+        database = path.strip("/") or default_database
+        if _DATABASE_NAME_RE.fullmatch(database) is None:
+            raise ProviderError("Passbolt resource URI has an invalid database name")
+    return {
+        "uri": normalized,
+        "host": parsed.hostname,
+        "port": port,
+        "path": path,
+        "database": database,
+    }
 
 
 def _origin_label(value: str, field: str) -> str:
@@ -597,6 +698,106 @@ class PassboltSinkDispatcher:
             raise ProviderError("Passbolt secure sink registry is invalid")
         return {str(key): value for key, value in sinks.items() if isinstance(value, dict)}
 
+    def definition(self, sink_ref: str) -> dict[str, Any]:
+        if not isinstance(sink_ref, str) or _SINK_REF_RE.fullmatch(sink_ref) is None:
+            raise PermissionError("Passbolt sink_ref is invalid")
+        config = self._load().get(sink_ref)
+        if config is None:
+            raise PermissionError("Passbolt sink_ref is not registered")
+        return config
+
+    def requires_job(self, sink_ref: str) -> bool:
+        return bool(self.definition(sink_ref).get("requires_job"))
+
+    def approval_mode(self, sink_ref: str) -> str:
+        value = self.definition(sink_ref).get("require_approval", "never")
+        if value not in _SINK_APPROVAL_MODES:
+            raise ProviderError("Passbolt sink approval mode is invalid")
+        return str(value)
+
+    @staticmethod
+    def _default_port(config: Mapping[str, Any]) -> int:
+        value = config.get("default_port", 443)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65_535:
+            raise ProviderError("Passbolt sink default port is invalid")
+        return value
+
+    def target(self, sink_ref: str, resource_uri: str | None) -> dict[str, Any]:
+        config = self.definition(sink_ref)
+        database = config.get("default_database")
+        if database is not None and not isinstance(database, str):
+            raise ProviderError("Passbolt sink default database is invalid")
+        return _sink_target(
+            resource_uri,
+            default_port=self._default_port(config),
+            default_database=database,
+        )
+
+    def _job_path(self, sink_ref: str, job_ref: str) -> Path:
+        if not isinstance(job_ref, str) or _JOB_REF_RE.fullmatch(job_ref) is None:
+            raise PermissionError("Passbolt job_ref is invalid")
+        config = self.definition(sink_ref)
+        value = config.get("job_dir")
+        if not isinstance(value, str) or not Path(value).is_absolute():
+            raise ProviderError("Passbolt job directory is not configured")
+        directory = Path(value)
+        try:
+            info = directory.lstat()
+        except OSError as exc:
+            raise ProviderError("Passbolt job directory is unavailable") from exc
+        if (
+            directory.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or not _trusted_owner(info.st_uid)
+            or not _private_mode(info.st_mode)
+        ):
+            raise ProviderError("Passbolt job directory permissions are unsafe")
+        return directory / f"{job_ref}.json"
+
+    def load_job(self, sink_ref: str, job_ref: str) -> tuple[dict[str, Any], str]:
+        """Read a server-side job once; the caller binds it into the approval digest."""
+        config = self.definition(sink_ref)
+        path = self._job_path(sink_ref, job_ref)
+        max_bytes = config.get("max_job_bytes", 65_536)
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1 <= max_bytes <= 1_048_576:
+            raise ProviderError("Passbolt job size bound is invalid")
+        try:
+            info = path.lstat()
+            if (
+                path.is_symlink()
+                or not stat.S_ISREG(info.st_mode)
+                or not _trusted_owner(info.st_uid)
+                or not _not_group_writable(info.st_mode)
+                or info.st_mode & 0o077
+                or not 0 < info.st_size <= max_bytes
+            ):
+                raise PermissionError("Passbolt job file permissions are unsafe")
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                raw = handle.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                raise PermissionError("Passbolt job file is too large")
+            payload = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PermissionError("Passbolt job is missing or invalid") from exc
+        if not isinstance(payload, dict):
+            raise PermissionError("Passbolt job is invalid")
+        declared = payload.get("sink")
+        if declared is not None and declared != sink_ref:
+            raise PermissionError("Passbolt job belongs to another sink")
+        return payload, hashlib.sha256(raw).hexdigest()
+
+    def archive_job(self, sink_ref: str, job_ref: str) -> None:
+        """Move a consumed job out of the live directory (best effort, one-time jobs)."""
+        path = self._job_path(sink_ref, job_ref)
+        archive = path.parent / "archive"
+        try:
+            archive.mkdir(mode=0o700, exist_ok=True)
+            os.replace(path, archive / f"{job_ref}.{int(time.time())}.json")
+        except OSError:
+            with suppress(OSError):
+                path.unlink()
+
     def access_policy(self, binding_label: str) -> PassboltAccessPolicy:
         if re.fullmatch(r"[a-z][a-z0-9_]{0,31}", binding_label) is None:
             raise PermissionError("Passbolt principal binding is invalid")
@@ -689,6 +890,12 @@ class PassboltSinkDispatcher:
             raise ProviderError("Passbolt secure sink executable is unavailable") from exc
         if not executable.is_absolute() or unsafe or digest != expected_hash:
             raise ProviderError("Passbolt secure sink executable is not an absolute server path")
+        bundle_hash = config.get("bundle_sha256")
+        if bundle_hash is not None:
+            if not isinstance(bundle_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", bundle_hash):
+                raise ProviderError("Passbolt secure sink bundle hash is not pinned")
+            if _bundle_digest(executable.parent / "passbolt_sinkkit") != bundle_hash:
+                raise ProviderError("Passbolt secure sink bundle hash mismatch")
         if out_file is not None and not any("{path}" in item for item in value):
             raise ProviderError("Passbolt out_file sink command must contain {path}")
         return command
@@ -719,12 +926,11 @@ class PassboltSinkDispatcher:
         username: str | None,
         password: str,
         target_url: str | None,
+        target: Mapping[str, Any] | None = None,
+        job: Mapping[str, Any] | None = None,
+        job_sha256: str | None = None,
     ) -> bool:
-        if not _SINK_REF_RE.fullmatch(sink_ref):
-            raise ValueError("sink_ref is invalid")
-        config = self._load().get(sink_ref)
-        if config is None:
-            raise PermissionError("Passbolt sink_ref is not registered")
+        config = self.definition(sink_ref)
         kind = config.get("kind")
         timeout = config.get("timeout_seconds", 30)
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 120:
@@ -733,18 +939,21 @@ class PassboltSinkDispatcher:
             from zai_passbolt.https_probe import probe
 
             return await probe(config, password, target_url)
-        envelope = json.dumps(
-            {
-                "resource_id": resource_id,
-                "username": username,
-                "password": password,
-                "target_url": target_url,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        command = self._command(config) if kind == "secure_fill" else None
+        resolved = dict(target) if target is not None else self.target(sink_ref, target_url)
+        payload: dict[str, Any] = {
+            "resource_id": resource_id,
+            "username": username,
+            "password": password,
+            "target_url": target_url or resolved.get("uri"),
+            "target": resolved,
+        }
+        if job is not None:
+            payload["job"] = job
+            payload["job_sha256"] = job_sha256
+        envelope = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if kind == "secure_fill":
-            command = self._command(config)
+            assert command is not None
             await asyncio.to_thread(self._run, command, stdin=envelope, timeout=timeout)
             return True
         if kind != "out_file":
@@ -806,7 +1015,7 @@ class PassboltAdapter:
         metadata_fingerprints: str = "",
         http: JsonRequester | None = None,
     ) -> None:
-        self.base_url = _https_url(base_url, "Passbolt base URL") if base_url.strip() else ""
+        self.base_url = _base_url(base_url, "Passbolt base URL") if base_url.strip() else ""
         self.service_user_id = service_user_id.strip()
         self.service_username = service_username.strip()
         self.user_fingerprint = user_fingerprint.replace(" ", "").upper()
@@ -965,6 +1174,12 @@ class PassboltAdapter:
         except (OSError, subprocess.TimeoutExpired) as exc:
             probe_reason("gpg_operation_failed")
             raise ProviderResponseError("Passbolt GPG operation failed") from exc
+        if result.returncode == 2 and expected_signer is None and result.stdout:
+            # Passbolt signs secret payloads with the entry creator's user key. Verifying
+            # those signatures requires every creator's public key locally; exit code 2
+            # with non-empty stdout means decryption succeeded and only signature
+            # assurance is unavailable. Signer-pinned decryptions still enforce VALIDSIG.
+            return result.stdout
         if result.returncode != 0:
             probe_reason("gpg_operation_failed")
             raise ProviderResponseError("Passbolt GPG operation failed")
@@ -1020,7 +1235,9 @@ class PassboltAdapter:
                 "--trust-model",
                 "always",
                 "--local-user",
-                self.user_fingerprint,
+                # Pin the primary key ("!"): Passbolt verifies the signature against the
+                # user's primary key fingerprint and rejects subkey signatures.
+                self.user_fingerprint + "!",
                 "--recipient",
                 recipient,
                 "--encrypt",
@@ -1034,7 +1251,7 @@ class PassboltAdapter:
             return False
         try:
             await self._gpg(
-                ["--armor", "--local-user", self.user_fingerprint, "--detach-sign"],
+                ["--armor", "--local-user", self.user_fingerprint + "!", "--detach-sign"],
                 stdin="mcp-platform-passbolt-readiness",
             )
             return True
@@ -1471,13 +1688,16 @@ class PassboltAdapter:
 
     async def select(
         self,
-        target_url: str,
+        target_url: str | None = None,
         query: str = "",
         limit: int = 10,
         *,
         allowed_resource_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
-        target_url, query, limit = self.validate_select(target_url, query, limit)
+        if target_url is not None:
+            target_url = self.validate_select(target_url, query, limit)[0]
+        if not query and not target_url:
+            raise ValueError("either query or target_url is required")
         search_query = query or (_host(target_url) or "")
         result = await self.search(
             search_query,
@@ -1486,12 +1706,19 @@ class PassboltAdapter:
             allowed_resource_ids=allowed_resource_ids,
         )
         resource = result["resources"][0] if result["resources"] else None
-        decision = self.domain_decision(str(resource.get("uri") or "") if resource else None, target_url)
+        if target_url:
+            decision = self.domain_decision(
+                str(resource.get("uri") or "") if resource else None, target_url
+            )
+            domain_match, domain_reason = decision.matches, decision.reason
+        else:
+            # The hint is optional; the delivery target always comes from the record.
+            domain_match, domain_reason = False, "no_target_hint"
         return {
             "resource": resource,
-            "domain_match": decision.matches,
-            "confirmation_required": not decision.matches,
-            "domain_reason": decision.reason,
+            "domain_match": domain_match,
+            "confirmation_required": False,
+            "domain_reason": domain_reason,
             "secret_disclosed": False,
         }
 
@@ -2311,8 +2538,11 @@ class PassboltAdapter:
         *,
         resource_id: str,
         sink_ref: str,
-        target_url: str | None,
+        resource_uri: str | None,
         username: str | None,
+        target: Mapping[str, Any] | None = None,
+        job: Mapping[str, Any] | None = None,
+        job_sha256: str | None = None,
     ) -> dict[str, bool]:
         secret = await self._secret_payload(resource_id)
         password = secret.get("password")
@@ -2321,11 +2551,15 @@ class PassboltAdapter:
                 # PIN codes are not credentials for a target URL; keep them in the vault.
                 raise ProviderResponseError("Passbolt PIN code resources cannot be delivered to a sink")
             raise ProviderResponseError("Passbolt decrypted secret has no password")
+        resolved = dict(target) if target is not None else self.sinks.target(sink_ref, resource_uri)
         delivered = await self.sinks.deliver(
             sink_ref,
             resource_id=_uuid(resource_id, "resource_id"),
             username=username,
             password=password,
-            target_url=target_url,
+            target_url=resource_uri,
+            target=resolved,
+            job=job,
+            job_sha256=job_sha256,
         )
         return {"delivered_to_sink": delivered}

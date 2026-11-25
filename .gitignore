@@ -18,6 +18,10 @@ Service/
 
 # Generated local MCP client snippets contain machine-specific paths.
 mcp-client.json
+
+# Local private material: GPG home, passphrase, provider env, sink registry, public key.
+secrets/
+SETUP-LOCAL.md
 mcp-client.toml
 
 # Personal workspace data; shared AGENTS.md, guides and shipped skills stay public.
@@ -39,3 +43,6 @@ mcp-client.toml
 !/.env.example
 !/.env.sample
 !/.env.template
+
+# sink runtime artifacts
+.browser.lock

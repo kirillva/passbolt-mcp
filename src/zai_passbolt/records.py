@@ -78,4 +78,7 @@ class PassboltAuditRecord:
     domain_decision: str | None = None
     sink_ref: str | None = None
     vault_profile: str | None = None
+    job_sha256: str | None = None
+    target_host: str | None = None
+    target_port: int | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))

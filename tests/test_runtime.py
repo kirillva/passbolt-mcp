@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
@@ -21,6 +22,38 @@ CREATE = dict(
 )
 
 
+class FixtureSinks:
+    """Minimal sink surface for tool tests; delivery is stubbed on the adapter."""
+
+    def definition(self, sink_ref):
+        return {"kind": "secure_fill", "default_port": 443}
+
+    def target(self, sink_ref, resource_uri):
+        host = "example.com"
+        if resource_uri:
+            parsed = urlsplit(resource_uri)
+            host = parsed.hostname or host
+        return {
+            "uri": resource_uri or "https://example.com/login",
+            "host": host,
+            "port": 443,
+            "path": "/login",
+            "database": None,
+        }
+
+    def approval_mode(self, sink_ref):
+        return "never"
+
+    def requires_job(self, sink_ref):
+        return False
+
+    def load_job(self, sink_ref, job_ref):
+        raise AssertionError("no job expected in this fixture")
+
+    def archive_job(self, sink_ref, job_ref):
+        return None
+
+
 class FixtureAdapter:
     def __init__(self):
         self.calls = []
@@ -29,6 +62,7 @@ class FixtureAdapter:
         self.wait = None
         self.entered = asyncio.Event()
         self.checkpoint_failure = False
+        self.sinks = FixtureSinks()
 
     def access_policy(self, label):
         return PassboltAccessPolicy(
@@ -223,7 +257,7 @@ async def test_checkpoint_resumes_share_without_fresh_create(config):
     assert adapter.calls[1][1]["resume_resource_id"] == RESOURCE
 
 
-async def test_selection_bound_actor_target_single_use_and_durable(config):
+async def test_selection_is_actor_bound_single_use_and_target_comes_from_record(config):
     adapter = FixtureAdapter()
     _, call = harness(config, adapter)
     chosen = await call("passbolt_select", target_url="https://example.com/login")
@@ -231,29 +265,30 @@ async def test_selection_bound_actor_target_single_use_and_durable(config):
     _, bob = harness(replace(config, principal_id="bob"), adapter)
     with pytest.raises(SafeToolError):
         await bob("passbolt_use_secret", selection_id=selection, sink_ref="fill")
-    with pytest.raises(SafeToolError):
-        await call(
-            "passbolt_use_secret", selection_id=selection, sink_ref="fill", target_url="https://other.example"
-        )
+    # A caller-supplied target_url is ignored: the record URI is the target.
     _, call = harness(config, adapter)
-    assert await call("passbolt_use_secret", selection_id=selection, sink_ref="fill") == {
-        "delivered_to_sink": True
-    }
+    assert await call(
+        "passbolt_use_secret",
+        selection_id=selection,
+        sink_ref="fill",
+        target_url="https://other.example",
+    ) == {"delivered_to_sink": True}
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "use" and kwargs["resource_uri"] == "https://example.com/login"
+    assert kwargs["target"]["host"] == "example.com"
     with pytest.raises(SafeToolError):
         await call("passbolt_use_secret", selection_id=selection, sink_ref="fill")
-    assert len(adapter.calls) == 1
 
 
-async def test_mismatched_domain_requires_accepted_approval(config):
+async def test_record_uri_is_used_without_domain_approval(config):
     adapter = FixtureAdapter()
     adapter.match = False
-    runtime, call = harness(config, adapter)
+    _, call = harness(config, adapter)
     chosen = await call("passbolt_select", target_url="https://other.example/login")
-    args = dict(selection_id=chosen["selection_id"], sink_ref="fill")
-    prepared = await call("passbolt_use_secret", **args)
-    assert not prepared["delivered_to_sink"]
-    approval = await approve(runtime, prepared)
-    assert (await call("passbolt_use_secret", **args, approval_id=approval))["delivered_to_sink"]
+    assert chosen["confirmation_required"] is False
+    result = await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+    assert result == {"delivered_to_sink": True}
+    assert adapter.calls[0][1]["resource_uri"] == "https://example.com/login"
 
 
 async def test_cancelled_create_leaves_pending_and_conservative_lease(config):

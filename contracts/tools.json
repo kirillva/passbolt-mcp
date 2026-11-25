@@ -50,7 +50,15 @@
       "additionalProperties": false,
       "properties": {
         "target_url": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "query": {
           "default": "",
@@ -61,16 +69,13 @@
           "type": "integer"
         }
       },
-      "required": [
-        "target_url"
-      ],
       "type": "object"
     },
     "outputSchema": {
       "additionalProperties": true,
       "type": "object"
     },
-    "description": "Bind one matching resource to this principal and exact target URL; returns selection_id. Use before `passbolt_use_secret`. Metadata only."
+    "description": "Bind one matching resource to this principal; returns selection_id. target_url is an optional ranking hint only. Use before `passbolt_use_secret`. Metadata only."
   },
   "passbolt_create_resource": {
     "inputSchema": {
@@ -377,7 +382,7 @@
         "sink_ref": {
           "type": "string"
         },
-        "target_url": {
+        "job_ref": {
           "anyOf": [
             {
               "type": "string"
@@ -389,6 +394,17 @@
           "default": null
         },
         "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_url": {
           "anyOf": [
             {
               "type": "string"
@@ -410,6 +426,6 @@
       "additionalProperties": true,
       "type": "object"
     },
-    "description": "Deliver a selected secret to one registered sink (secure_fill/out_file/https_probe). Use to log in or hand off; the secret never enters the chat. Requires passbolt:use."
+    "description": "Deliver a selected secret to one registered sink (secure_fill/out_file/https_probe), using the record URI as the target. Optional job_ref for pg/ssh jobs. The secret never enters the chat. Requires passbolt:use."
   }
 }

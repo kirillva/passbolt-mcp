@@ -135,7 +135,8 @@ async def test_unknown_resource_type_is_labelled_not_dropped() -> None:
 async def test_select_on_pin_code_needs_confirmation_and_discloses_nothing() -> None:
     result = await VaultAdapter().select("https://other.example/door", "Office door", 5)
     assert result["resource"]["resource_type"] == "v5-pin-code"
-    assert result["confirmation_required"] is True and result["secret_disclosed"] is False
+    # Legacy field kept for compatibility; delivery never needs a domain confirmation.
+    assert result["confirmation_required"] is False and result["secret_disclosed"] is False
 
 
 async def test_use_secret_refuses_pin_codes_without_leaking_them() -> None:
@@ -149,7 +150,7 @@ async def test_use_secret_refuses_pin_codes_without_leaking_them() -> None:
         await adapter.use_secret(
             resource_id="11111111-1111-4111-8111-111111111111",
             sink_ref="fill",
-            target_url="https://example.com/door",
+            resource_uri="https://example.com/door",
             username=None,
         )
     assert "PIN code" in str(error.value) and PIN_FIXTURE not in repr(error.value)
@@ -169,8 +170,15 @@ async def test_use_secret_returns_only_delivery_flag() -> None:
     result = await adapter.use_secret(
         resource_id="22222222-2222-4222-8222-222222222222",
         sink_ref="fill",
-        target_url="https://example.com/login",
+        resource_uri="https://example.com/login",
         username="operator",
+        target={
+            "uri": "https://example.com/login",
+            "host": "example.com",
+            "port": 443,
+            "path": "/",
+            "database": None,
+        },
     )
     assert result == {"delivered_to_sink": True}
     assert seen["password"] == PASSWORD_FIXTURE and NOTE_FIXTURE not in json.dumps(seen)

@@ -119,7 +119,25 @@ async def test_select_requires_confirmation_for_domain_mismatch() -> None:
     result = await adapter.select("https://target.example/login", "Portal", 10)
 
     assert result["domain_match"] is False
-    assert result["confirmation_required"] is True
+    # Domain mismatch is informational only: the delivery target is the record URI.
+    assert result["confirmation_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_select_without_target_hint_uses_metadata_only() -> None:
+    adapter = PassboltAdapter(
+        "https://passbolt.example",
+        "fixture-token",
+        http=FakeHttp([{"id": "resource-1", "name": "Portal", "uri": "https://other.example/login"}]),
+    )
+
+    result = await adapter.select(None, "Portal", 10)
+
+    assert result["resource"]["resource_id"] == "resource-1"
+    assert result["domain_match"] is False
+    assert result["confirmation_required"] is False
+    with pytest.raises(ValueError):
+        await adapter.select(None, "", 10)
 
 
 @pytest.mark.asyncio

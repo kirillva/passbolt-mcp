@@ -6,12 +6,41 @@ import argparse
 import asyncio
 import json
 import re
+import stat
+from pathlib import Path
 from uuid import UUID
 
 from zai_passbolt.config import ServiceConfig
 from zai_passbolt.https_probe import validate_probe
 from zai_passbolt.onboarding import load_config
 from zai_passbolt.profiles import Profiles
+
+_SINK_REFERENCE_FILES = ("known_hosts", "profiles_file", "sslrootcert")
+
+
+def _local_sink_paths(item) -> tuple[str, bool]:
+    """Validate sink paths without executing the sink or touching the network."""
+    job_dir = item.get("job_dir")
+    if job_dir is not None:
+        directory = Path(job_dir)
+        try:
+            info = directory.lstat()
+        except OSError:
+            return "configuration_path_unavailable", False
+        if directory.is_symlink() or not directory.is_dir() or info.st_mode & 0o077:
+            return "configuration_path_unavailable", False
+    for key in _SINK_REFERENCE_FILES:
+        value = item.get(key)
+        if value is None:
+            continue
+        path = Path(value) if isinstance(value, str) else None
+        try:
+            info = path.lstat() if path is not None else None
+        except OSError:
+            return "configuration_file_missing", False
+        if path is None or info is None or path.is_symlink() or not stat.S_ISREG(info.st_mode):
+            return "configuration_file_missing", False
+    return "registered_local_process_not_executed", True
 
 
 async def diagnose(adapter, policy_label, config):
@@ -25,6 +54,7 @@ async def diagnose(adapter, policy_label, config):
         "server_public_key_present": False,
         "access_policy": False,
         "https_sink_configuration": True,
+        "sink_configuration": True,
     }
     try:
         UUID(adapter.service_user_id)
@@ -46,7 +76,10 @@ async def diagnose(adapter, policy_label, config):
                     sinks[name] = "invalid_configuration"
                     checks["https_sink_configuration"] = False
             else:
-                sinks[name] = "registered_local_process_not_executed"
+                status, valid = _local_sink_paths(item)
+                sinks[name] = status
+                if not valid:
+                    checks["sink_configuration"] = False
     except Exception:
         checks["access_policy"] = False
     if checks["user_fingerprint"]:

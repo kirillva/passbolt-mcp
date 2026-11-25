@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0
+
+- Sinks: the delivery target (host, port, path/database) is derived from the Passbolt resource URI;
+  callers cannot override it. Removed the domain allowlist check and mismatch approvals from the
+  use path; `passbolt_select` no longer requires `target_url` (kept as an optional ranking hint).
+  `passbolt_use_secret` accepts `job_ref` instead of a caller-supplied target.
+- One-time jobs: `job_dir`/`max_job_bytes` in the sink registry, `job_sha256` bound into the
+  approval digest, TOCTOU re-check before delivery, archived after use. New `scripts/passbolt_job.py`.
+- Per-sink `require_approval` (`never` default, `always` for `ssh_adhoc`); audit records
+  `job_sha256`, `target_host`, `target_port`.
+- New example sinks: `login_fill` (single-tab CDP autofill, focus check, MFA/login-error codes),
+  `pg_query` (read-only transaction plus conservative SQL allowlist), `ssh_ops` (known_hosts,
+  profiles, argv-only commands, staged SFTP uploads).
+- `scripts/install_sinks.py` deploys the examples, rewrites shebangs, pins SHA-256 and updates the
+  registry atomically. `doctor` checks sink paths (job dir, known_hosts, profiles, CA).
+- Sinks are split into a layered package (`passbolt_sinkkit`): envelope, guards, executors, a
+  shared CLI and result writer. Entrypoints are thin; site-specific login flows are data in
+  `web-profiles.json`, pinned together with the package by `bundle_sha256`.
+- Docs: `docs/SINKS.md`; router/skill text now describes the record-URI model.
+
 ## 0.6.0
 
 - Optional lazy tool loading (`PASSBOLT_TOOL_LOADING=eager|lazy`, default `eager` = unchanged): lazy lists a small core plus `passbolt_enable_toolsets` (toolsets with one-line description and token cost); enabling registers the tools at runtime and sends `notifications/tools/list_changed`. Allowlists, read-only mode and approval gates still apply. Setup wizard asks eager vs lazy. Startup tokens (tools/list + instructions, ≈chars/4): eager ≈2448, lazy ≈1048. Scope: enablement is per MCP session (FastMCP session visibility), so one client's enabled toolsets never appear for another. The HTTP transport here is stateless (every request is its own session), so enabled toolsets do not persist there: for shared HTTP use `eager` or `PASSBOLT_TOOLSETS`. README lazy section lists verified `tools/list_changed` client support with sources.

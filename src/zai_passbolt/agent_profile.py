@@ -25,7 +25,7 @@ ROUTER = build_router(
     "passbolt",
     "Passbolt MCP: use vault credentials WITHOUT seeing them; no tool returns passwords. "
     "Secrets go only to registered sinks: "
-    "search -> select(target_url) -> use_secret(selection_id, sink_ref).",
+    "search -> select(query) -> use_secret(selection_id, sink_ref).",
     ROUTES,
     "Update/share: first call returns approval_id; operator accepts outside MCP (never yourself); repeat "
     "with approval_id; shares also ask the user via elicitation. Never ask to paste a password.",
@@ -48,10 +48,11 @@ DESCRIPTIONS = {
     "credential; then `passbolt_select`. Never returns passwords.",
     "passbolt_list_folders": "List folder metadata (id, name, parent, personal) within policy. Use for "
     "access reviews and before create/share. Never returns secrets.",
-    "passbolt_select": "Bind one matching resource to this principal and exact target URL; returns "
-    "selection_id. Use before `passbolt_use_secret`. Metadata only.",
+    "passbolt_select": "Bind one matching resource to this principal; returns selection_id. "
+    "target_url is an optional ranking hint only. Use before `passbolt_use_secret`. Metadata only.",
     "passbolt_use_secret": "Deliver a selected secret to one registered sink (secure_fill/out_file/"
-    "https_probe). Use to log in or hand off; the secret never enters the chat. Requires passbolt:use.",
+    "https_probe), using the record URI as the target. Optional job_ref for pg/ssh jobs. "
+    "The secret never enters the chat. Requires passbolt:use.",
     "passbolt_create_resource": "Create a v5 resource with a server_generated or sealed_ref secret (no "
     "plaintext input). Use for onboarding. Writes: idempotent, within policy.",
     "passbolt_update_resource": "Update a resource (approval-gated, optimistic concurrency). First call "
@@ -84,7 +85,8 @@ PROMPTS = (
         "Use a vault credential for a site without exposing it (sink delivery).",
         ("target_url", "sink_ref"),
         "I need to sign in to {target_url}. Follow skill passbolt-secret-handoff: passbolt_search, "
-        "passbolt_select(target_url), then passbolt_use_secret to sink {sink_ref}. Never show the secret.",
+        "passbolt_select(query), then passbolt_use_secret to sink {sink_ref}. The target comes from the "
+        "record URI. Never show the secret.",
     ),
     Prompt(
         "access_review",

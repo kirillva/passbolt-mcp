@@ -313,12 +313,12 @@ async def test_real_decrypt_selection_probe_replay_and_no_plaintext(
         (bob, args),
         (read_only, args),
         (call, {**args, "sink_ref": "other"}),
-        (call, {**args, "target_url": "https://other.example/"}),
     ]:
         with pytest.raises(SafeToolError):
             await denied_call("passbolt_use_secret", **denied_args)
     assert not requests and not probe_transport["requests"]
-    result = await call("passbolt_use_secret", **args)
+    # A caller-supplied target_url is ignored; the record URI is the destination.
+    result = await call("passbolt_use_secret", **{**args, "target_url": "https://other.example/"})
     assert result == {"delivered_to_sink": True}
     assert len(requests) == len(probe_transport["requests"]) == 1
     assert probe_transport["requests"][0].headers["Authorization"] == "Bearer " + SECRET
