@@ -50,6 +50,19 @@ class RemoteFailure(SinkError):
     exit_code = 8
 
 
+class AuthRejected(RemoteFailure):
+    """The site answered the submitted credential with a refusal."""
+
+    status = "rejected"
+
+
+class AuthUnconfirmed(SinkError):
+    """The site neither accepted the credential visibly nor refused it."""
+
+    status = "unconfirmed"
+    exit_code = 8
+
+
 class AccountMismatch(SinkError):
     status = "account_mismatch"
     exit_code = 8
@@ -66,6 +79,8 @@ EXIT_CODES = {
     "mfa_required": 6,
     "denied": 7,
     "remote_error": 8,
+    "rejected": 8,
+    "unconfirmed": 8,
     "account_mismatch": 8,
     "error": 9,
 }

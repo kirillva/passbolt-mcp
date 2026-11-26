@@ -8,6 +8,7 @@ import fcntl
 import fnmatch
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +17,8 @@ from typing import Any
 
 from passbolt_sinkkit.errors import (
     AccountMismatch,
+    AuthRejected,
+    AuthUnconfirmed,
     FormError,
     InputError,
     MfaRequired,
@@ -28,6 +31,9 @@ from passbolt_sinkkit.guards.web import pick_page
 
 DEFAULT_CDP = "http://127.0.0.1:9222"
 POLL_SECONDS = 0.4
+# How long to wait for a site that neither redirects nor answers before admitting
+# that the outcome is unknown, instead of reporting a login nobody confirmed.
+SETTLE_SECONDS = 6.0
 
 COORDS_JS = r"""(() => {
   const vis = el => el && el.offsetParent !== null && !el.disabled;
@@ -69,8 +75,56 @@ STATE_JS = r"""(() => {
   const mfa = otp.length > 0 || /(two-factor|2fa|verification code|authenticator|код подтверждения)/i.test(text);
   const alert = [...document.querySelectorAll('[role="alert"], .error, .alert-danger, [data-error]')]
     .filter(vis).map(el => (el.innerText || '').trim()).filter(Boolean)[0] || '';
-  return JSON.stringify({ pwLeft, url: location.href, mfa, alert: alert.slice(0, 300) });
+  const dialog = [...document.querySelectorAll(
+    '[role="alertdialog"], [role="dialog"], .x-message-box, .x-window, .x-form-invalid-under,'
+    + ' .x-form-invalid-tip, .ant-message, .ant-modal-body, .modal.show, .toast, .notification')]
+    .filter(vis).map(el => (el.innerText || '').trim()).filter(t => t && t.length <= 300)[0] || '';
+  return JSON.stringify({ pwLeft, url: location.href, mfa, alert: alert.slice(0, 300),
+    dialog: dialog.slice(0, 300) });
 })()"""
+
+# A page that keeps the login form on screen after a submit is not logged in; a
+# toolkit dialog that says so is the site's own refusal, and the caller deserves
+# that sentence instead of a "logged_in" it cannot trust.
+_AUTH_FAILURE_RE = re.compile(
+    r"(неверн|неправильн|не существует|не найден|заблокиров|неактивн|придум[ау]н|истёк|истек"
+    r"|ошибк[аи]\s+(авторизаци|входа|логина|пароля|учёт|учет|аутентифик)"
+    r"|доступ\s+(запрещ|отказан)|не\s+авторизов|несовпад"
+    r"|invalid|incorrect|wrong\s+(password|login)|unauthoriz|not\s+authorized|access\s+denied"
+    r"|forbidden|locked\s*out|account\s+(is\s+)?(disabled|locked))",
+    re.IGNORECASE,
+)
+
+
+def failure_text(state: dict[str, Any]) -> str:
+    """The site's refusal, if there is one: an explicit alert, or a dialog that reads like one."""
+    alert = str(state.get("alert") or "").strip()
+    if alert:
+        return alert[:300]
+    dialog = str(state.get("dialog") or "").strip()
+    if dialog and _AUTH_FAILURE_RE.search(dialog):
+        return dialog[:300]
+    return ""
+
+
+def login_outcome(state: dict[str, Any], start_url: str = "") -> tuple[str, str]:
+    """Classify the page after a submit: logged_in, mfa, rejected or unconfirmed."""
+    refused = failure_text(state)
+    if refused:
+        return "rejected", refused
+    if state.get("mfa"):
+        return "mfa", ""
+    try:
+        pw_left = int(state.get("pwLeft") or 0)
+    except (TypeError, ValueError):
+        pw_left = 0
+    if pw_left == 0:
+        return "logged_in", ""
+    url = str(state.get("url") or "")
+    if start_url and url and url != start_url:
+        return "logged_in", ""
+    return "unconfirmed", "the login form is still on screen"
+
 
 
 def _selector_point_js(selector: str) -> str:
@@ -204,8 +258,9 @@ def _expect(cdp: Cdp, step: dict) -> None:
     deadline = time.monotonic() + step["timeout_ms"] / 1000
     while time.monotonic() < deadline:
         state = _state(cdp)
-        if state.get("alert"):
-            raise RemoteFailure(str(state["alert"]))
+        refused = failure_text(state)
+        if refused:
+            raise AuthRejected(refused)
         if state.get("mfa"):
             raise MfaRequired("verification is required")
         url = str(state.get("url") or "")
@@ -234,10 +289,25 @@ def _verify_account(cdp: Cdp, verify: dict, values: dict[str, str | None]) -> st
     return raw
 
 
-def _finish(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
+def _finish(cdp: Cdp, plan: dict, values: dict[str, str | None], start_url: str = "") -> dict:
+    """Confirm the outcome instead of assuming it: refuse, wait for the page, then report."""
+    try:
+        settle = float(plan.get("settle_ms") or SETTLE_SECONDS * 1000) / 1000
+    except (TypeError, ValueError):
+        settle = SETTLE_SECONDS
+    deadline = time.monotonic() + settle
     state = _state(cdp)
-    if state.get("alert"):
-        raise RemoteFailure(str(state["alert"]))
+    status, detail = login_outcome(state, start_url)
+    while status == "unconfirmed" and time.monotonic() < deadline:
+        time.sleep(POLL_SECONDS)
+        state = _state(cdp)
+        status, detail = login_outcome(state, start_url)
+    if status == "rejected":
+        raise AuthRejected(detail)
+    if status == "mfa":
+        raise MfaRequired("verification is required")
+    if status == "unconfirmed":
+        raise AuthUnconfirmed(detail)
     result: dict = {"status": "logged_in", "url": state.get("url")}
     verify = plan.get("verify")
     if isinstance(verify, dict):
@@ -246,6 +316,7 @@ def _finish(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
 
 
 def _run_steps(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
+    start_url = str(_state(cdp).get("url") or "")
     for step in plan["steps"]:
         action = step["action"]
         if action == "fill":
@@ -269,7 +340,7 @@ def _run_steps(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
             _wait_visible(cdp, step["selector"], step["timeout_ms"])
         elif action == "expect":
             _expect(cdp, step)
-    return _finish(cdp, plan, values)
+    return _finish(cdp, plan, values, start_url)
 
 
 def _run_heuristic(cdp: Cdp, values: dict[str, str | None], plan: dict | None = None) -> dict:
@@ -296,15 +367,16 @@ def _run_heuristic(cdp: Cdp, values: dict[str, str | None], plan: dict | None = 
     while time.monotonic() < deadline:
         time.sleep(POLL_SECONDS)
         state = _state(cdp)
-        if state.get("mfa"):
+        status, detail = login_outcome(state, start_url)
+        if status == "rejected":
+            raise AuthRejected(detail)
+        if status == "mfa":
             raise MfaRequired("verification is required")
-        if state.get("alert"):
-            raise RemoteFailure(str(state["alert"]))
-        if state.get("url") != start_url or state.get("pwLeft") == 0:
-            result = _finish(cdp, plan or {}, values)
+        if status == "logged_in":
+            result = _finish(cdp, plan or {}, values, start_url)
             result["start_url"] = start_url
             return result
-    raise SinkTimeout("login did not complete")
+    raise AuthUnconfirmed(login_outcome(_state(cdp), start_url)[1] or "login did not complete")
 
 
 def run(

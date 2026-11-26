@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.2
+
+- Browser sinks confirm a login instead of declaring one. After the steps the sink looks for
+  the site's own refusal — an ARIA alert or a visible toolkit dialog reading like "Неверный
+  логин или пароль" / "invalid credentials" / "account is locked" — and returns
+  `status: "rejected"` with that sentence in `detail`; when the login form is simply still on
+  screen it returns `unconfirmed`. Both are non-zero outcomes, so a refused credential can no
+  longer come back as `logged_in`: ExtJS-style message boxes carry no `role=alert` and were
+  missed, and the absence of an alert was read as success. A profile can widen the
+  confirmation window with `settle_ms` (1000–30000 ms, default 6000).
+
 ## 0.7.1
 
 - Domain matching follows the host, not the URL spelling. `passbolt_search` and

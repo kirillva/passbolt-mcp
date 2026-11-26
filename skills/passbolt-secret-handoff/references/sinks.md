@@ -18,8 +18,11 @@ and `domain_hosts` (the origins you may target).
 
 `passbolt_use_secret` returns the sink outcome, not just a boolean:
 `{"delivered_to_sink": true, "status": "logged_in", "url": "...", "account": "..."}`.
-A structured failure (`status: "no_target"`, `"account_mismatch"`, `"timeout"`) comes back the same
-way, so read `status`/`detail` instead of assuming success from `delivered_to_sink`.
+A structured failure (`status: "no_target"`, `"rejected"`, `"unconfirmed"`, `"account_mismatch"`,
+`"timeout"`) comes back the same way, so read `status`/`detail` instead of assuming success from
+`delivered_to_sink`. `rejected` carries the site's own refusal ("Неверный логин или пароль"),
+`unconfirmed` means the login form is still on screen and nothing confirmed the session — neither
+is a success, and a wrong password must not be retried blindly.
 
 ## Scheme, port and plain HTTP
 
@@ -31,7 +34,9 @@ HTTP is the operator's call — `allow_insecure_uri` on that sink, or
 switch; relay it instead of retrying. A browser upgrades HTTP on its own, so an open tab
 may sit on 443 while the record says 80: that is the same site and the sink follows it.
 A `target_url` passed to search or select is only a hint — `https://host/path?x=1`,
-`http://host` and `host` name the same site.
+`http://host` and `host` name the same site. One trap: if a site calls its own API over plain
+HTTP, its tab must stay on HTTP too — a page the browser quietly upgraded makes that call
+cross-scheme, and the site answers it as a failed login.
 
 ## Several accounts on one site (browser sinks)
 

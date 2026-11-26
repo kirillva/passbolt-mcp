@@ -250,6 +250,11 @@ def build_plan(document: dict[str, Any], target: dict[str, Any]) -> dict[str, An
         "mode": "profile",
         "steps": [validate_step(step) for step in steps],
     }
+    settle = profile.get("settle_ms")
+    if settle is not None:
+        if isinstance(settle, bool) or not isinstance(settle, int) or not 1_000 <= settle <= 30_000:
+            raise InputError("settle_ms is out of range")
+        plan["settle_ms"] = settle
     verify = validate_verify(profile.get("verify"))
     if verify is not None:
         plan["verify"] = verify

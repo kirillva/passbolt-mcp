@@ -21,7 +21,14 @@ SINKS = ROOT / "examples" / "sinks"
 sys.path.insert(0, str(SINKS))
 
 from passbolt_sinkkit.envelope import parse_target  # noqa: E402
-from passbolt_sinkkit.errors import Denied, InputError, JobError, SinkError  # noqa: E402
+from passbolt_sinkkit.errors import (  # noqa: E402
+    Denied,
+    InputError,
+    JobError,
+    SinkError,
+    exit_code_for,
+)
+from passbolt_sinkkit.executors import web as web_exec  # noqa: E402
 from passbolt_sinkkit.guards import ssh as ssh_guard  # noqa: E402
 from passbolt_sinkkit.guards import web as web_guard  # noqa: E402
 from passbolt_sinkkit.guards.sql import validate_pg_job, validate_readonly_sql  # noqa: E402
@@ -417,6 +424,59 @@ def test_web_guard_is_data_driven() -> None:
         web_guard.validate_step({"action": "press", "key": "F12"})
     with pytest.raises(InputError):
         web_guard.validate_step({"action": "fill", "selector": "#x", "value_ref": "secret"})
+
+
+def test_login_outcome_refuses_to_call_a_still_visible_form_a_success() -> None:
+    """A toolkit dialog with no ARIA role is still the site saying no."""
+    assert web_exec.login_outcome({"pwLeft": 0, "url": "https://a/app"}, "https://a/login") == (
+        "logged_in",
+        "",
+    )
+    assert web_exec.login_outcome({"pwLeft": 1, "url": "https://a/app"}, "https://a/login") == (
+        "logged_in",
+        "",
+    )
+    assert web_exec.login_outcome({"pwLeft": 1, "url": "https://a/#home"}, "https://a/#home")[0] == (
+        "unconfirmed"
+    )
+
+    refused = web_exec.login_outcome(
+        {
+            "pwLeft": 1,
+            "url": "https://a/#home",
+            "dialog": "Ошибка авторизации Неверный логин или пароль OK",
+        },
+        "https://a/#home",
+    )
+    assert refused[0] == "rejected" and "Неверный логин" in refused[1]
+
+    # A dialog that carries no refusal wording is not evidence of a rejection.
+    assert web_exec.login_outcome({"pwLeft": 1, "url": "u", "dialog": "Сессия продлена"}, "u")[0] == (
+        "unconfirmed"
+    )
+    # An explicit alert counts even without auth wording; a challenge outranks both.
+    assert web_exec.login_outcome({"pwLeft": 1, "url": "u", "alert": "server said no"}, "u")[0] == (
+        "rejected"
+    )
+    assert web_exec.login_outcome({"pwLeft": 1, "url": "u", "mfa": True})[0] == "mfa"
+    assert exit_code_for("rejected") == 8 and exit_code_for("unconfirmed") == 8
+
+
+def test_build_plan_accepts_a_bounded_settle_window() -> None:
+    def plan_with(settle: Any) -> dict[str, Any]:
+        profile: dict[str, Any] = {
+            "match": {"host": "a.example"},
+            "steps": [{"action": "fill", "selector": "input[name=username]", "value_ref": "username"}],
+        }
+        if settle is not None:
+            profile["settle_ms"] = settle
+        return web_guard.build_plan({"profiles": {"a": profile}}, {"host": "a.example", "path": "/x"})
+
+    assert plan_with(None).get("settle_ms") is None
+    assert plan_with(12_000)["settle_ms"] == 12_000
+    for rejected in (500, 90_000, "12000", True):
+        with pytest.raises(InputError):
+            plan_with(rejected)
 
 
 def test_web_guard_requires_exactly_one_tab() -> None:
