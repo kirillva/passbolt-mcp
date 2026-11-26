@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Update checks can follow a downstream feed: `PASSBOLT_UPDATE_REPOSITORY` selects whose releases
+  or tags are compared (default `zai-one/passbolt-mcp`) and is validated before it reaches any URL,
+  result or model-facing text — a malformed value makes no request and reports `status: "unknown"`
+  instead of "up to date". `PASSBOLT_UPDATE_COMMAND` names the operator's own update command: it
+  becomes `install_method: "operator_script"` and the suggested `update_command`, so callers are
+  never told to install an artifact that lacks the operator's changes. The cache is now bound to the
+  checked repository, results carry a `repository` field, and `passbolt_status` exposes it.
 - Search and selection: `passbolt_search` filters by `query` (name/URI/username, matched per field),
   `target_url` (origin) and `username`; filters combine with AND and `target_url` alone lists every
   account on a site. `passbolt_select` accepts `resource_id`/`username`, returns the bound record's

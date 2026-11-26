@@ -525,10 +525,14 @@ def register_tools(server: Any, runtime: Any) -> None:
         # Cache-only hint: the status probe never contacts GitHub.
         known = update_check.cached_status(update_cache_path(settings))
         if known and known["update_available"]:
-            result["update"] = {
-                key: known[key]
-                for key in ("current_version", "latest_version", "release_notes_url", "update_command")
-            }
+            fields = (
+                "current_version",
+                "latest_version",
+                "repository",
+                "release_notes_url",
+                "update_command",
+            )
+            result["update"] = {key: known[key] for key in fields}
         await _passbolt_audit("passbolt:read", "status", "success")
         return result
 
@@ -537,7 +541,9 @@ def register_tools(server: Any, runtime: Any) -> None:
         """Check whether a newer Passbolt MCP release exists on GitHub. Suggests, never installs.
 
         Uses the public GitHub API with a short timeout and a 24h cache; never contacts the vault.
-        Set PASSBOLT_DISABLE_UPDATE_CHECK=1 to turn it off.
+        The checked repository and the suggested update command are operator settings
+        (PASSBOLT_UPDATE_REPOSITORY, PASSBOLT_UPDATE_COMMAND); PASSBOLT_DISABLE_UPDATE_CHECK=1
+        turns the check off.
         """
         return await update_check.check_for_update(update_cache_path(settings), force=force)
 

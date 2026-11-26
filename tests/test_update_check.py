@@ -29,6 +29,8 @@ def client_for(handler) -> httpx.AsyncClient:
 @pytest.fixture
 def enabled(monkeypatch):
     monkeypatch.delenv("PASSBOLT_DISABLE_UPDATE_CHECK", raising=False)
+    monkeypatch.delenv("PASSBOLT_UPDATE_REPOSITORY", raising=False)
+    monkeypatch.delenv("PASSBOLT_UPDATE_COMMAND", raising=False)
 
 
 def release_handler(tag: str, calls: list[str]):
@@ -339,7 +341,7 @@ def test_background_refresh_obeys_the_failure_back_off(tmp_path, enabled, monkey
     )
     fetched: list[bool] = []
 
-    async def fetch(client):
+    async def fetch(client, repository):
         fetched.append(True)
         raise AssertionError("background refresh must respect the back-off")
 
@@ -349,3 +351,138 @@ def test_background_refresh_obeys_the_failure_back_off(tmp_path, enabled, monkey
         if thread.name == "update-check":
             thread.join(timeout=10)
     assert fetched == []
+
+
+FORK = "acme/passbolt-mcp"
+FORK_API = f"https://api.github.com/repos/{FORK}"
+
+
+@pytest.fixture
+def fork(monkeypatch):
+    monkeypatch.setenv("PASSBOLT_UPDATE_REPOSITORY", FORK)
+
+
+def fork_handler(tag: str, calls: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        assert str(request.url) == f"{FORK_API}/releases/latest"
+        return httpx.Response(
+            200, json={"tag_name": tag, "html_url": f"https://github.com/{FORK}/releases/tag/{tag}"}
+        )
+
+    return handler
+
+
+async def test_repository_override_checks_the_configured_feed(tmp_path, enabled, fork):
+    calls: list[str] = []
+    cache = tmp_path / "c.json"
+    async with client_for(fork_handler(f"v{NEWER}", calls)) as client:
+        result = await update_check.check_for_update(cache, client=client)
+    assert calls == [f"{FORK_API}/releases/latest"]
+    assert result["repository"] == FORK and result["latest_version"] == NEWER
+    assert result["release_notes_url"] == f"https://github.com/{FORK}/releases/tag/v{NEWER}"
+    assert json.loads(cache.read_text())["repository"] == FORK
+    # Every suggested command follows the configured repository, never a hardcoded one.
+    assert f"github.com/{FORK}/releases/download" in result["update_commands"]["release_package"]
+    assert "zai-one" not in json.dumps(result, default=str)
+
+
+async def test_repository_override_falls_back_to_the_configured_tags(tmp_path, enabled, fork):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).startswith(FORK_API)
+        if request.url.path.endswith("/releases/latest"):
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(200, json=[{"name": "v0.1.0"}, {"name": f"v{NEWER}"}])
+
+    async with client_for(handler) as client:
+        result = await update_check.check_for_update(tmp_path / "c.json", client=client)
+    assert result["latest_version"] == NEWER and result["repository"] == FORK
+    assert result["update_available"] is True
+
+
+async def test_invalid_repository_override_makes_no_request(tmp_path, enabled, monkeypatch):
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a malformed repository override must never be requested")
+
+    bad_values = (
+        "acme",
+        "acme/passbolt-mcp/extra",
+        "../etc/passwd",
+        "acme/passbolt-mcp;curl x",
+        "https://github.com/acme/passbolt-mcp",
+        "acme/passbolt\u043c-mcp",
+    )
+    for bad in bad_values:
+        monkeypatch.setenv("PASSBOLT_UPDATE_REPOSITORY", bad)
+        async with client_for(fail) as client:
+            result = await update_check.check_for_update(None, client=client)
+        assert result["status"] == "unknown" and result["source"] == "none", bad
+        assert result["repository"] is None and result["update_available"] is False, bad
+        assert result["error"] == "invalid repository", bad
+        # Nothing malformed reaches results, and a malformed feed yields no hint.
+        assert bad not in json.dumps(result, default=str)
+        assert update_check.startup_hint(tmp_path / "missing.json") == ""
+
+
+async def test_cache_for_another_repository_is_dropped(tmp_path, enabled, monkeypatch):
+    cache = tmp_path / "c.json"
+    _cache(cache, f"v{NEWER}")
+    assert update_check.cached_status(cache) is not None
+    monkeypatch.setenv("PASSBOLT_UPDATE_REPOSITORY", FORK)
+    assert update_check.cached_status(cache) is None
+    assert update_check.startup_hint(cache) == ""
+
+
+async def test_operator_command_is_the_suggested_update(tmp_path, enabled, fork, monkeypatch):
+    monkeypatch.setenv("PASSBOLT_UPDATE_COMMAND", "passbolt-mcp-update")
+    cache = tmp_path / "c.json"
+    async with client_for(fork_handler(f"v{NEWER}", [])) as client:
+        result = await update_check.check_for_update(cache, client=client)
+    assert result["install_method"] == "operator_script"
+    assert result["update_command"] == "passbolt-mcp-update"
+    assert result["update_commands"]["operator_script"] == "passbolt-mcp-update"
+    assert "uv tool install" not in result["update_command"]
+    hint = update_check.startup_hint(cache)
+    assert "Update available" in hint and "passbolt-mcp-update" in hint
+
+
+async def test_invalid_operator_command_is_ignored(tmp_path, enabled, monkeypatch):
+    bad_values = (
+        "passbolt-mcp-update; rm -rf /",
+        "passbolt-mcp-update | sh",
+        "passbolt-$(whoami)",
+        "passbolt-mcp`id`",
+        'passbolt-mcp-update --force "x"',
+        "passbolt-mcp\nupdate",
+        "x" * 300,
+    )
+    for bad in bad_values:
+        monkeypatch.setenv("PASSBOLT_UPDATE_COMMAND", bad)
+        async with client_for(release_handler(f"v{NEWER}", [])) as client:
+            result = await update_check.check_for_update(tmp_path / "c.json", client=client)
+        assert result["install_method"] != "operator_script", bad
+        assert result["update_command"] != bad and "operator_script" not in result["update_commands"], bad
+        assert bad not in json.dumps(result, default=str), bad
+        assert update_check.operator_command() is None, bad
+
+
+async def test_status_and_tool_report_the_checked_repository(config, enabled, fork, monkeypatch):
+    cache = config.state_path.parent / "update-check.json"
+    _cache(cache, f"v{NEWER}")
+    data = json.loads(cache.read_text())
+    data["repository"] = FORK
+    data["release_notes_url"] = f"https://github.com/{FORK}/releases/tag/v{NEWER}"
+    cache.write_text(json.dumps(data))
+
+    async def no_network(*args, **kwargs):
+        raise AssertionError("status must not fetch")
+
+    monkeypatch.setattr(update_check, "_fetch_latest", no_network)
+    async with Client(create_server(config, transport="stdio", adapter=FixtureAdapter())) as client:
+        instructions = client.initialize_result.instructions or ""
+        result = (await client.call_tool("passbolt_check_update", {})).data
+        status = (await client.call_tool("passbolt_status", {})).data
+    assert "Update available" in instructions
+    assert result["repository"] == FORK and result["source"] == "cache"
+    assert status["update"]["repository"] == FORK
+    assert "zai-one" not in json.dumps({"instructions": instructions, "status": status})

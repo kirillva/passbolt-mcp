@@ -40,14 +40,23 @@ JWT должен иметь точные `iss`, `aud`, действующий `e
 | `PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY` | `false`; `true` выводит чтение метаданных (`passbolt_search`, `passbolt_directory`, `passbolt_list_folders`, `passbolt_status`) из окна в 60 с. Кулдаун после ответа 429/таймаута и одиночный in-flight запрос остаются |
 | `PASSBOLT_SELECTION_TTL` | 60–600 секунд, по умолчанию 600 |
 | `PASSBOLT_DISABLE_UPDATE_CHECK` | `1` отключает проверку обновлений и любые запросы к GitHub; по умолчанию проверка включена |
+| `PASSBOLT_UPDATE_REPOSITORY` | `zai-one/passbolt-mcp`; свой источник тегов вида `owner/repo` (зеркало, форк). Некорректное значение: запрос не выполняется, статус `unknown` |
+| `PASSBOLT_UPDATE_COMMAND` | Пусто; своя команда обновления (`passbolt-mcp-update`). Если задана, предлагается она, а не установка пакета |
 
 Проверка обновлений: при запуске сервер в фоне делает анонимный запрос к
-`api.github.com` (последний релиз `zai-one/passbolt-mcp`) не чаще раза в сутки,
-в том числе в HTTP-развёртывании; vault и учётные данные не используются.
+`api.github.com` (последний релиз `zai-one/passbolt-mcp`, если не задан
+`PASSBOLT_UPDATE_REPOSITORY`) не чаще раза в сутки, в том числе в
+HTTP-развёртывании; vault и учётные данные не используются. Репозиторий без
+оформленных релизов проверяется по списку тегов. Результат только предлагает
+обновление и ничего не устанавливает: `install_method` показывает способ
+(`operator_script` при заданной `PASSBOLT_UPDATE_COMMAND`, иначе `git_checkout`
+или `release_package`), поле `repository` — относительно какого репозитория
+считалась актуальность. Некорректный override не уходит ни в URL, ни в текст для
+модели и даёт `status: "unknown"`, а не «актуально». Кэш привязан к репозиторию:
+при смене источника прежний вердикт отбрасывается.
 После неудачной попытки следующая — не раньше чем через 30 минут,
-`passbolt_check_update(force=true)` — не чаще раза в минуту. Результат только
-предлагает обновление и ничего не устанавливает. Без выхода в интернет задайте
-`PASSBOLT_DISABLE_UPDATE_CHECK=1`.
+`passbolt_check_update(force=true)` — не чаще раза в минуту. Без выхода в интернет
+задайте `PASSBOLT_DISABLE_UPDATE_CHECK=1`.
 
 Пример привязок для одного vault: `{"local-operator":"owner_all"}`.
 Для нескольких vault используется `PASSBOLT_PROFILE_REGISTRY_FILE`:
