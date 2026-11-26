@@ -598,7 +598,7 @@ class V4UpdateAdapter(PassboltAdapter):
         return {"body": {"id": V4_RESOURCE_ID, "modified": "2026-10-02T00:00:00Z"}}
 
 
-async def test_v4_update_changes_metadata_and_resends_the_secret_verbatim() -> None:
+async def test_v4_update_changes_metadata_without_touching_secrets() -> None:
     adapter = V4UpdateAdapter()
     result = await adapter.update_resource(
         resource_id=V4_RESOURCE_ID,
@@ -611,8 +611,10 @@ async def test_v4_update_changes_metadata_and_resends_the_secret_verbatim() -> N
     assert payload["uri"] == "postgresql://dev-ws-v-07:443/postgres"
     assert payload["name"] == "legacy" and payload["username"] == "postgres"
     assert payload["description"] == "note"
-    # The ciphertext travels untouched: no decryption, no re-encryption, no loss.
-    assert payload["secrets"] == [V4_SECRET]
+    assert payload["id"] == V4_RESOURCE_ID
+    # The secret list is never sent: the v4 API validates it strictly and replaces it, so the
+    # stored ciphertext is left alone (a live probe showed it survives untouched).
+    assert "secrets" not in payload
 
 
 async def test_v4_update_keeps_untouched_fields_and_can_clear_the_uri() -> None:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+- The v4 update sends no `secrets` field at all. Passbolt validates the secret list strictly on
+  that endpoint (the first attempt answered HTTP 400 "Could not validate resource data" with
+  `secrets` flagged), and it replaces the list when present — so a metadata-only PUT is the safe
+  shape: the ciphertext stays untouched, verified by reading the record back after a live update.
+
 ## 0.9.0
 
 - `passbolt_update_resource` now updates legacy **v4** resources (`password and description`),

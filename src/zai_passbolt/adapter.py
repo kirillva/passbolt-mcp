@@ -2622,12 +2622,12 @@ class PassboltAdapter:
     async def _update_v4_resource(
         self, resource: Mapping[str, Any], fields: Mapping[str, Any]
     ) -> dict[str, Any]:
-        """Update a legacy v4 resource's plaintext metadata; the secret is re-sent untouched.
+        """Update a legacy v4 resource's plaintext metadata; the secret is left alone.
 
-        The v4 API replaces the secret list when it is present, so the ciphertext read back
-        from the vault is copied verbatim (no decryption, no re-encryption): a metadata edit
-        can never drop or rewrite somebody's password. Password rotation on v4 stays a vault
-        UI action.
+        The v4 API validates the secret list strictly and replaces it when present, so a
+        metadata edit sends no `secrets` at all: the stored ciphertext stays untouched (no
+        decryption, no re-encryption, no validation games) and a metadata write can never drop
+        or rewrite somebody's password. Password rotation on v4 stays a vault UI action.
         """
         if "secret_source" in fields:
             raise ValueError(
@@ -2654,15 +2654,7 @@ class PassboltAdapter:
             if key not in payload:
                 current = resource.get(key)
                 payload[key] = current if isinstance(current, str) else None
-        secrets = resource.get("secrets")
-        if isinstance(secrets, list):
-            verbatim = [
-                {"user_id": item.get("user_id"), "data": item.get("data")}
-                for item in secrets
-                if isinstance(item, dict) and item.get("user_id") and item.get("data")
-            ]
-            if verbatim:
-                payload["secrets"] = verbatim
+        payload["id"] = _uuid(str(resource.get("id")), "resource_id")
         result = _unwrap(
             await self._request(
                 "PUT",

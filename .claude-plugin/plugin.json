@@ -1,6 +1,6 @@
 {
   "name": "passbolt",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Passbolt vault access for agents: secrets go to sinks, never to the chat; agent skills included",
   "author": {
     "name": "ZAI.ONE",
