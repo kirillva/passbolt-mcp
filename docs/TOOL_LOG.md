@@ -1,0 +1,67 @@
+# Локальный лог ошибок инструментов
+
+Нужен, чтобы инструкции (гайды и скиллы) правились по фактическим отказам модели, а
+не по догадкам. Пишется только при **ошибке** вызова инструмента, локально, одним
+JSON-объектом на строку.
+
+## Где и в каком виде
+
+```
+~/.config/passbolt-mcp/state/tool-errors.jsonl        # 0600, каталог 0700
+~/.config/passbolt-mcp/state/tool-errors.jsonl.1      # ротация по 2 МБ, хранится 2 файла
+~/.config/passbolt-mcp/state/tool-errors.jsonl.2
+```
+
+Поля строки:
+
+| Поле | Что это |
+|---|---|
+| `ts` | время в UTC, ISO-8601 |
+| `version` | версия сервера (`0.7.x`) |
+| `tool` | имя инструмента, например `passbolt_use_secret` |
+| `outcome` | `error`, `timeout`, `cancelled` |
+| `code` | безопасный код конверта: `validation_failed`, `provider_configuration_invalid`, `provider_rate_limited`, … |
+| `error` | класс исключения (`ProviderConfigurationError`, `ValueError`, …) |
+| `hint` | наша собственная подсказка из конверта — если она есть, её и надо донести до инструкций |
+| `actor`, `execution_id`, `duration_ms` | принципал, id исполнения (сходится с таблицей `audit` в `state/passbolt.sqlite`), длительность |
+| `arguments` | форма аргументов: безопасные строки как есть (`target_url` — только host:port, `query`, `sink_ref`, `page`, `resource_id`, `limit`…), остальное — `{"chars": N}`, `{"kind": "object", "fields": N}` |
+
+Чего в логе **не бывает**: пароля, `secret_source`, `note`, `fields`, полного URI с
+путём/query, текста ошибки провайдера или синка. Строка обрезается до 2 КБ так, чтобы
+остаться валидным JSON; запись, которая не удалась (нет диска, нет прав, symlink),
+молча пропускается — лог не имеет права ломать вызов инструмента.
+
+## Настройки
+
+| Переменная | Смысл |
+|---|---|
+| `PASSBOLT_TOOL_LOG=0` (или `off`, `false`, `no`, `none`) | выключить лог |
+| `PASSBOLT_TOOL_LOG_PATH=/home/<user>/.../errors.jsonl` | свой путь; принимается только внутри `$HOME`, иначе пишем в каталог состояния |
+
+## Собрать отчёт
+
+```sh
+uv run python scripts/tool_log_report.py            # по умолчанию рядом с state-базой
+uv run python scripts/tool_log_report.py --top 8 --samples 5
+```
+
+Отчёт группирует: по `tool`+`code`, по встречавшимся `hint`, отдельно — аргументы у
+`validation_failed` / `provider_configuration_invalid` / `provider_disabled` (это
+кандидаты в правку гайдов), и последние отказы. Секретов в нём нет по построению,
+поэтому его можно приложить к задаче или обсуждению.
+
+## Как этим править инструкции
+
+1. `validation_failed` с одним и тем же `arguments` → в гайде не хватает примера
+   формата (`target_url` — это host или URL, а не произвольная строка; `page` — маркер
+   `[a-z0-9._-]`, и т. п.).
+2. `provider_configuration_invalid` → `hint` уже содержит, что именно поправить
+   (HTTPS vs plain-HTTP опт-ин, домен вне `domain_hosts`, отсутствующий `sink_ref`).
+   Такие случаи стоит вынести в `resources/guide/errors.md` и в скиллы-зеркала.
+3. `provider_disabled` / `permission denied` → чаще всего модель зовёт инструмент без
+   нужного scope или до включения `PASSBOLT_USE_ENABLED`; это правило для `security.md`.
+4. `provider_rate_limited` → не ошибка инструкций, а сигнал про батчинг вызовов;
+   смотреть `retry_after_seconds` в ответе.
+
+После правки гайдов не забыть зеркала в `skills/*/references/*.md` — их сверяет
+`scripts/token_budget.py`.

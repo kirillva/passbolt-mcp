@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastmcp.server.dependencies import get_access_token
 
+from zai_passbolt import __version__, tool_log
 from zai_passbolt.config import ServiceConfig
 from zai_passbolt.errors import SafeToolError, safe_provider_error
 from zai_passbolt.profiles import Profiles
@@ -195,6 +196,7 @@ class Runtime:
     async def execute(self, tool: str, arguments: dict[str, Any], factory):
         execution, token, outcome, began = uuid4().hex, None, "error", False
         dispatch_token = self.dispatched.set([0])
+        started = time.monotonic()
         actor = None
         try:
             self.authorize(tool)
@@ -212,8 +214,22 @@ class Runtime:
             return self.clean(result)
         except asyncio.CancelledError:
             outcome = "cancelled"
+            self._log_failure(
+                tool, arguments, execution, actor, started, "cancelled", "cancelled", None, None
+            )
             raise
-        except SafeToolError:
+        except SafeToolError as exc:
+            self._log_failure(
+                tool,
+                arguments,
+                execution,
+                actor,
+                started,
+                "error",
+                exc.error_code,
+                exc.envelope.get("hint"),
+                None,
+            )
             raise
         except Exception as exc:
             if isinstance(exc, TimeoutError):
@@ -225,10 +241,49 @@ class Runtime:
                 and not isinstance(exc, ProviderAdmissionDenied)
             ):
                 self.store.cooldown(actor, getattr(exc, "retry_after_seconds", None) or 60)
-            raise safe_provider_error("passbolt", exc) from None
+            converted = safe_provider_error("passbolt", exc)
+            self._log_failure(
+                tool,
+                arguments,
+                execution,
+                actor,
+                started,
+                outcome,
+                converted.error_code,
+                converted.envelope.get("hint"),
+                type(exc).__name__,
+            )
+            raise converted from None
         finally:
             self.dispatched.reset(dispatch_token)
             if token is not None:
                 self.state.reset(token)
             if began:
                 self.store.finish(execution, outcome)
+
+    def _log_failure(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        execution: str,
+        actor: str | None,
+        started: float,
+        outcome: str,
+        code: str,
+        hint: Any,
+        error: str | None,
+    ) -> None:
+        """Best-effort local error log: the operator reads it to fix the instructions."""
+        tool_log.record_error(
+            state_path=self.settings.state_path,
+            version=__version__,
+            tool=tool,
+            outcome=outcome,
+            code=code,
+            error=error,
+            hint=hint if isinstance(hint, str) else None,
+            actor=actor,
+            execution_id=execution,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            arguments=arguments if isinstance(arguments, dict) else {},
+        )

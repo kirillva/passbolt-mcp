@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import replace
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -322,6 +323,26 @@ async def test_plain_http_record_on_an_allowlisted_host_is_delivered(config):
     [(kind, kwargs)] = adapter.calls
     assert kind == "use"
     assert kwargs["target"]["scheme"] == "http" and kwargs["target"]["port"] == 80
+
+
+async def test_a_failed_tool_call_lands_in_the_local_error_log(config, monkeypatch):
+    """The operator reads this file to fix the instructions; it must be there and be safe."""
+    monkeypatch.delenv("PASSBOLT_TOOL_LOG", raising=False)
+    adapter = FixtureAdapter()
+    adapter.record_uri = "http://lab.example/login"
+    _, call = harness(config, adapter)
+    chosen = await call("passbolt_select", target_url="http://lab.example/login")
+    with pytest.raises(SafeToolError):
+        await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+
+    log = config.state_path.parent / "tool-errors.jsonl"
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [entry["tool"] for entry in entries] == ["passbolt_use_secret"]
+    entry = entries[0]
+    assert entry["code"] == "provider_configuration_invalid"
+    assert "lab.example" in entry["hint"] and "plain-HTTP" in entry["hint"]
+    assert entry["arguments"] == {"selection_id": {"chars": 36}, "sink_ref": "fill"}
+    assert entry["duration_ms"] >= 0 and entry["version"] and entry["execution_id"]
 
 
 async def test_cancelled_create_leaves_pending_and_conservative_lease(config):
