@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.1
+
+- Domain matching follows the host, not the URL spelling. `passbolt_search` and
+  `passbolt_select` take `target_url` as the address-bar form: `https://host/path?x=1`,
+  `http://host` and a bare `host` are the same site, path/query/fragment are dropped
+  instead of refused, and a hint may name a parent domain (`it-serv.ru` also lists
+  `demo.it-serv.ru`). Ranking reports it as `domain_match` or `domain_suffix_match`, and
+  several matches still come back as `candidates` for the caller to choose from — the
+  hint only filters metadata, the delivery target stays the record URI. Credentials and
+  non-HTTP schemes in a hint remain invalid.
+- A record URI may be plain HTTP when the operator says so: `"allow_insecure_uri": true`
+  on one sink, or `PASSBOLT_ALLOW_INSECURE_HTTP=1` for all of them. `http://` derives
+  port 80 (an explicit port still wins, other schemes keep `default_port`), and a browser
+  sink follows the tab the browser upgraded — 80 and 443 on the same host are one site,
+  any other port is not. Plain-HTTP delivery also requires the host in `domain_hosts`
+  (`plain_http_denied` in the audit); HTTPS records and the write-side origin policy are
+  unchanged. The delivery envelope gains a `scheme` field.
+- Configuration problems this project authors now answer `provider_configuration_invalid`
+  with a short `hint` (for example which switch to set for a plain-HTTP lab site), so a
+  caller can act instead of retrying. Provider and sink messages stay opaque.
+
 ## 0.7.0
 
 - Update checks can follow a downstream feed: `PASSBOLT_UPDATE_REPOSITORY` selects whose releases

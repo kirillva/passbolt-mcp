@@ -17,6 +17,16 @@ class ProviderError(RuntimeError):
     pass
 
 
+class ProviderConfigurationError(ProviderError):
+    """Server-side configuration the caller cannot derive from the provider.
+
+    Messages for this class are authored in this codebase, never echoed from the
+    vault or a sink, so the safe error envelope may show a short `hint`: a model
+    that sees it can tell the operator what to fix instead of retrying blindly.
+    Keep these strings free of secrets, tokens and provider payloads.
+    """
+
+
 class ProviderRateLimited(ProviderError):
     def __init__(self, message: str, *, retry_after_seconds: int | None = None) -> None:
         super().__init__(message)

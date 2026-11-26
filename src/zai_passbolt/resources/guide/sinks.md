@@ -21,6 +21,18 @@ and `domain_hosts` (the origins you may target).
 A structured failure (`status: "no_target"`, `"account_mismatch"`, `"timeout"`) comes back the same
 way, so read `status`/`detail` instead of assuming success from `delivered_to_sink`.
 
+## Scheme, port and plain HTTP
+
+Ports come from the record URI: an explicit port wins, `http://` means 80, everything
+else uses the sink's `default_port`. A bare `http://` site stays a usable site, but plain
+HTTP is the operator's call — `allow_insecure_uri` on that sink, or
+`PASSBOLT_ALLOW_INSECURE_HTTP=1` — and the host must be in `domain_hosts`. Otherwise
+`passbolt_use_secret` answers `provider_configuration_invalid` with a `hint` naming the
+switch; relay it instead of retrying. A browser upgrades HTTP on its own, so an open tab
+may sit on 443 while the record says 80: that is the same site and the sink follows it.
+A `target_url` passed to search or select is only a hint — `https://host/path?x=1`,
+`http://host` and `host` name the same site.
+
 ## Several accounts on one site (browser sinks)
 
 When several tabs are open on the same origin, an unqualified delivery is refused. Open or navigate

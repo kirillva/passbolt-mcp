@@ -13,7 +13,8 @@ from typing import Any
 import pytest
 
 from zai_passbolt.adapter import PassboltSinkDispatcher, _sink_target
-from zai_passbolt.transport import ProviderError
+from zai_passbolt.errors import safe_provider_error
+from zai_passbolt.transport import ProviderConfigurationError, ProviderError
 
 ROOT = Path(__file__).resolve().parents[1]
 SINKS = ROOT / "examples" / "sinks"
@@ -29,6 +30,7 @@ from passbolt_sinkkit.guards.sql import validate_pg_job, validate_readonly_sql  
 def test_sink_target_defaults_and_explicit_port() -> None:
     assert _sink_target("https://db.example", default_port=5432, default_database="postgres") == {
         "uri": "https://db.example",
+        "scheme": "https",
         "host": "db.example",
         "port": 5432,
         "path": "/",
@@ -38,6 +40,57 @@ def test_sink_target_defaults_and_explicit_port() -> None:
     assert explicit["port"] == 443 and explicit["database"] == "app"
     web = _sink_target("https://portal.example/login", default_port=443, default_database=None)
     assert web["port"] == 443 and web["path"] == "/login" and web["database"] is None
+
+
+def test_plain_http_record_needs_the_operator_opt_in() -> None:
+    """A lab site on plain HTTP is usable, but only when the operator said so."""
+    with pytest.raises(ProviderConfigurationError, match="plain HTTP"):
+        _sink_target("http://lab.example/app", default_port=443, default_database=None)
+
+    target = _sink_target(
+        "http://lab.example/app",
+        default_port=443,
+        default_database=None,
+        allow_plain_http=True,
+    )
+    assert target["scheme"] == "http" and target["port"] == 80 and target["path"] == "/app"
+    pinned = _sink_target(
+        "http://lab.example:8080/app",
+        default_port=443,
+        default_database=None,
+        allow_plain_http=True,
+    )
+    assert pinned["port"] == 8080
+
+
+def test_allows_plain_http_flag_wins_over_the_global_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PASSBOLT_ALLOW_INSECURE_HTTP", raising=False)
+    assert PassboltSinkDispatcher.allows_plain_http({}) is False
+    monkeypatch.setenv("PASSBOLT_ALLOW_INSECURE_HTTP", "1")
+    assert PassboltSinkDispatcher.allows_plain_http({}) is True
+    # One lab sink may opt in while another stays HTTPS-only.
+    assert PassboltSinkDispatcher.allows_plain_http({"allow_insecure_uri": False}) is False
+    assert PassboltSinkDispatcher.allows_plain_http({"allow_insecure_uri": True}) is True
+    with pytest.raises(ProviderError):
+        PassboltSinkDispatcher.allows_plain_http({"allow_insecure_uri": "yes"})
+
+
+def test_configuration_error_carries_an_actionable_hint() -> None:
+    """Only our own configuration text reaches the caller; provider errors stay opaque."""
+    error = safe_provider_error(
+        "passbolt",
+        ProviderConfigurationError(
+            'Passbolt resource URI uses plain HTTP; store HTTPS or set "allow_insecure_uri": true'
+        ),
+    )
+    assert error.error_code == "provider_configuration_invalid"
+    assert "allow_insecure_uri" in error.envelope["hint"]
+
+    opaque = safe_provider_error("passbolt", ProviderError("vault said: secret-token"))
+    assert "hint" not in opaque.envelope
+    assert "secret-token" not in str(opaque)
 
 
 @pytest.mark.parametrize("uri", [None, "", "https://", "https://db.example?x=1", "https://db.example#f"])
@@ -59,6 +112,13 @@ def test_envelope_parses_target_and_falls_back_to_url() -> None:
         default_database="postgres",
     )
     assert fallback["port"] == 443 and fallback["database"] == "app"
+    # A web record on plain HTTP keeps its own port instead of the sink default.
+    lab = parse_target({"target_url": "http://lab.example/app"}, default_port=443, default_database=None)
+    assert lab["host"] == "lab.example" and lab["port"] == 80
+    with pytest.raises(SinkError):
+        parse_target(
+            {"target_url": "http://user:pass@lab.example/app"}, default_port=443, default_database=None
+        )
 
 
 def _registry(path: Path, sinks: dict[str, Any]) -> None:
@@ -175,6 +235,7 @@ async def test_delivery_envelope_is_derived_from_the_record_uri(tmp_path: Path) 
     envelope = json.loads(output.read_text(encoding="utf-8"))
     assert envelope["target"] == {
         "uri": "https://db.example:443/app",
+        "scheme": "https",
         "host": "db.example",
         "port": 443,
         "path": "/app",
@@ -368,6 +429,21 @@ def test_web_guard_requires_exactly_one_tab() -> None:
     duplicate = {"type": "page", "url": "https://a.example/login?step=2"}
     with pytest.raises(web_guard.TargetError):
         web_guard.pick_page([page, duplicate], target)
+
+
+def test_web_guard_follows_a_browser_upgrade_between_80_and_443() -> None:
+    """A record stored as http can legitimately face a tab the browser upgraded."""
+    http_target = {"host": "a.example", "port": 80, "path": "/login"}
+    upgraded = {"type": "page", "url": "https://a.example/login", "webSocketDebuggerUrl": "ws://x"}
+    assert web_guard.pick_page([upgraded], http_target) == upgraded
+    https_target = {"host": "a.example", "port": 443, "path": "/login"}
+    plain = {"type": "page", "url": "http://a.example/login", "webSocketDebuggerUrl": "ws://x"}
+    assert web_guard.pick_page([plain], https_target) == plain
+    exact_first = {"type": "page", "url": "http://a.example/login", "webSocketDebuggerUrl": "ws://p"}
+    assert web_guard.pick_page([exact_first, upgraded], http_target) == exact_first
+    # Any other port is a different target, never an upgrade.
+    elsewhere = {"type": "page", "url": "https://a.example:8443/x"}
+    assert web_guard.pick_page([elsewhere], http_target) is None
 
 
 def test_web_guard_selects_a_tab_by_marker() -> None:

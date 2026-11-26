@@ -27,6 +27,7 @@ from zai_passbolt.readiness import log_probe_failure, probe_reason, probe_step, 
 from zai_passbolt.transport import (
     JsonHttpClient,
     ProviderAuthenticationError,
+    ProviderConfigurationError,
     ProviderError,
     ProviderHttpError,
     ProviderPreconditionFailed,
@@ -179,7 +180,29 @@ class PassboltAccessPolicy:
     allow_share_all: bool = False
 
     def permits_domain(self, value: str) -> bool:
-        return (_origin(value) or "") in self.domain_hosts
+        """Write boundary: the exact HTTPS origin has to be allowlisted."""
+        return (_strict_origin(value) or "") in self.domain_hosts
+
+    def permits_host(self, value: str) -> bool:
+        """Host boundary for reading and using a record the vault already holds.
+
+        The scheme is not part of a host, and a browser upgrades HTTP by itself, so
+        an `http://` record on an allowlisted host is a transport detail rather than
+        a different destination. An entry that pins a port (`host:8443`) still has to
+        match that port. Writes keep the stricter :meth:`permits_domain`.
+        """
+        host = _site_host(value)
+        if host is None:
+            return False
+        authority = _site_authority(value)
+        for entry in self.domain_hosts:
+            entry_authority = _site_authority(entry)
+            if _site_host(entry_authority) != host:
+                continue
+            if _pins_port(entry_authority) and entry_authority != authority:
+                continue
+            return True
+        return False
 
     def permits_resource(self, resource_id: str, created: frozenset[str]) -> bool:
         return self.resource_scope == "all" or resource_id in self.resource_ids | created
@@ -188,12 +211,94 @@ class PassboltAccessPolicy:
         return self.folder_scope == "all" or folder_id in self.folder_ids | created
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _site_url(value: str, field: str) -> str:
+    """Validate an http(s) site URL; whether plain HTTP is allowed is the caller's call.
+
+    Credentials, unparseable hosts and invalid ports are always rejected: they can
+    smuggle a secret or split the destination. A query or fragment is refused too — it
+    can carry a page-bound token that must not travel to a sink. The scheme itself is
+    not the trust boundary (the operator's domain policy is), so `http://` parses and
+    the caller decides whether the operator allowed that transport.
+    """
+    normalized = value.strip().rstrip("/")
+    try:
+        parsed = urlsplit(normalized)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an absolute http(s) URL") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65_535)
+    ):
+        raise ValueError(f"{field} must be an absolute http(s) URL without credentials")
+    try:
+        parsed.hostname.encode("idna")
+    except UnicodeError as exc:
+        raise ValueError(f"{field} hostname is invalid") from exc
+    return normalized
+
+
+def _site_host(value: str | None) -> str | None:
+    """Hostname of a URL or a bare host, scheme-agnostic; None when unusable."""
+    if not value:
+        return None
+    candidate = value.strip()
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return None
+    host = parsed.hostname
+    if host is None or parsed.username is not None or parsed.password is not None:
+        return None
+    try:
+        return host.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return None
+
+
+def _site_authority(value: str | None) -> str | None:
+    """`host` or `host:port`; the scheme's default port is omitted. None when unusable."""
+    if not value:
+        return None
+    candidate = value.strip()
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = _site_host(candidate)
+    if host is None:
+        return None
+    authority = f"[{host}]" if ":" in host else host
+    if port is None or port == _DEFAULT_PORTS.get(parsed.scheme):
+        return authority
+    return f"{authority}:{port}"
+
+
+def _pins_port(authority: str | None) -> bool:
+    """True when a normalized authority names a port explicitly (IPv6-safe)."""
+    return bool(authority) and ":" in authority.rsplit("]", 1)[-1]
+
+
 def _base_url(value: str, field: str) -> str:
     """Validate the provider base URL.
 
     HTTPS is required unless the operator explicitly opts into plain HTTP with
     PASSBOLT_ALLOW_INSECURE_HTTP=1 (trusted isolated network). The opt-in never
-    applies to sink or probe URLs, which stay HTTPS-only.
+    applies to probe URLs, which stay HTTPS-only; a resource-derived sink target
+    honours the same opt-in, or the per-sink `allow_insecure_uri` flag.
     """
     if os.environ.get("PASSBOLT_ALLOW_INSECURE_HTTP", "").strip() == "1":
         normalized = value.strip().rstrip("/")
@@ -264,8 +369,8 @@ def _host(value: str | None) -> str | None:
     return parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
 
 
-def _origin(value: str | None) -> str | None:
-    """Return a normalized HTTPS authority; a bare host means default port 443."""
+def _strict_origin(value: str | None) -> str | None:
+    """Normalized HTTPS authority, or None for anything that is not HTTPS."""
     if not value:
         return None
     try:
@@ -278,6 +383,16 @@ def _origin(value: str | None) -> str | None:
     host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
     authority_host = f"[{host}]" if ":" in host else host
     return authority_host if port in (None, 443) else f"{authority_host}:{port}"
+
+
+def _origin(value: str | None) -> str | None:
+    """Return a normalized authority; the scheme only decides the default port.
+
+    `http://host`, `https://host` and a bare `host` all normalize to `host`, while
+    an explicit non-default port stays part of the authority: a site on `host:444`
+    is a different target than `host`.
+    """
+    return _site_authority(value)
 
 
 _JOB_REF_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
@@ -322,26 +437,45 @@ def _sink_target(
     *,
     default_port: int,
     default_database: str | None,
+    allow_plain_http: bool = False,
 ) -> dict[str, Any]:
     """Derive the connection target from the URI stored in the Passbolt resource.
 
     The URI is the only source of the target: callers cannot override host, port
-    or database. An explicit URI port wins; otherwise the sink's protocol default
-    applies (443 web, 5432 postgres, 22 ssh).
+    or database. An explicit URI port wins; otherwise `http://` means port 80 and
+    every other scheme uses the sink's protocol default (443 web, 5432 postgres,
+    22 ssh). Plain HTTP is refused unless the operator allowed it, because that is
+    the one case where the transport, not the address, is what changes.
     """
     if not uri:
-        raise ProviderError("Passbolt resource has no URI; the sink target cannot be derived")
+        raise ProviderConfigurationError(
+            "Passbolt resource has no URI; the sink target cannot be derived"
+        )
     try:
-        normalized = _https_url(uri, "resource_uri")
+        normalized = _site_url(uri, "resource_uri")
     except ValueError as exc:
-        raise ProviderError("Passbolt resource URI is invalid") from exc
+        raise ProviderConfigurationError(
+            "Passbolt resource URI is invalid; it must be an absolute http(s) address "
+            "without credentials, query or fragment"
+        ) from exc
     parsed = urlsplit(normalized)
+    scheme = parsed.scheme
+    if scheme == "http" and not allow_plain_http:
+        raise ProviderConfigurationError(
+            "Passbolt resource URI uses plain HTTP; store the site as HTTPS, or let the operator "
+            'opt in with "allow_insecure_uri": true on the sink '
+            "(PASSBOLT_ALLOW_INSECURE_HTTP=1 applies the same opt-in to every sink)"
+        )
     if parsed.hostname is None:
         raise ProviderError("Passbolt resource URI has no host")
     try:
-        port = parsed.port if parsed.port is not None else default_port
+        port = parsed.port
     except ValueError as exc:
         raise ProviderError("Passbolt resource URI has an invalid port") from exc
+    if port is None:
+        # The sink's default_port already encodes its protocol (443 web, 5432
+        # postgres, 22 ssh); only a plain-HTTP site needs a default of its own.
+        port = _DEFAULT_PORTS["http"] if scheme == "http" else default_port
     if not 1 <= port <= 65_535:
         raise ProviderError("Passbolt resource URI has an invalid port")
     path = parsed.path or "/"
@@ -352,11 +486,39 @@ def _sink_target(
             raise ProviderError("Passbolt resource URI has an invalid database name")
     return {
         "uri": normalized,
+        "scheme": scheme,
         "host": parsed.hostname,
         "port": port,
         "path": path,
         "database": database,
     }
+
+
+def _target_hint(value: str, field: str = "target_url") -> str:
+    """Normalize a site hint into a bare authority (`host` or `host:port`).
+
+    Callers paste whatever the address bar shows, so a path, query or fragment is
+    dropped instead of rejected: only the host and an explicit port take part in
+    domain matching. Credentials and non-HTTP schemes stay invalid — a hint must
+    never look like a request to redirect a secret somewhere.
+    """
+    candidate = value.strip()
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an http(s) site") from exc
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise ValueError(f"{field} must be an http(s) site without credentials")
+    if port is not None and not 1 <= port <= 65_535:
+        raise ValueError(f"{field} has an invalid port")
+    host = _site_host(candidate)
+    if host is None:
+        raise ValueError(f"{field} hostname is invalid")
+    authority = f"[{host}]" if ":" in host else host
+    return authority if port in (None, _DEFAULT_PORTS[parsed.scheme]) else f"{authority}:{port}"
 
 
 def _origin_label(value: str, field: str) -> str:
@@ -776,7 +938,23 @@ class PassboltSinkDispatcher:
             resource_uri,
             default_port=self._default_port(config),
             default_database=database,
+            allow_plain_http=self.allows_plain_http(config),
         )
+
+    @staticmethod
+    def allows_plain_http(config: Mapping[str, Any]) -> bool:
+        """Whether a record URI may deliver this sink's secret over plain HTTP.
+
+        The per-sink `allow_insecure_uri` flag decides on its own, so one HTTPS-only
+        sink can stay that way while a trusted lab sink opts in. With no flag the
+        operator-wide PASSBOLT_ALLOW_INSECURE_HTTP=1 opt-in applies.
+        """
+        value = config.get("allow_insecure_uri")
+        if value is None:
+            return os.environ.get("PASSBOLT_ALLOW_INSECURE_HTTP", "").strip() == "1"
+        if not isinstance(value, bool):
+            raise ProviderError("Passbolt sink allow_insecure_uri must be a boolean")
+        return value
 
     def _job_path(self, sink_ref: str, job_ref: str) -> Path:
         if not isinstance(job_ref, str) or _JOB_REF_RE.fullmatch(job_ref) is None:
@@ -1148,6 +1326,7 @@ class PassboltAdapter:
         return frozenset(relations)
 
     def domain_decision(self, resource_uri: str | None, target_url: str | None) -> DomainDecision:
+        """Exact host (and explicit port) match between the record and a target."""
         resource_host = _origin(resource_uri)
         target_host = _origin(target_url)
         if resource_host and target_host and resource_host == target_host:
@@ -1156,6 +1335,29 @@ class PassboltAdapter:
             return DomainDecision(True, "explicit_allowlist_match", resource_host, target_host)
         reason = "missing_resource_uri" if not resource_host else "origin_mismatch"
         return DomainDecision(False, reason, resource_host, target_host)
+
+    def hint_decision(self, resource_uri: str | None, target_url: str | None) -> DomainDecision:
+        """Domain match for a search or selection hint; a hint may name a parent domain.
+
+        Hints rank metadata the caller is already allowed to read, and a hint can
+        never move a secret: the delivery target always comes from the record URI.
+        So `it-serv.ru` may return records on `demo.it-serv.ru`, while
+        :meth:`domain_decision` — the one used for approvals, audit and plain-HTTP
+        gating — stays exact.
+        """
+        decision = self.domain_decision(resource_uri, target_url)
+        if decision.matches or decision.target_host is None or decision.resource_host is None:
+            return decision
+        hint = _site_host(decision.target_host)
+        host = _site_host(decision.resource_host)
+        if not hint or not host:
+            return decision
+        if host == hint:
+            # Same host on another port: a hint names the site, not its socket.
+            return DomainDecision(True, "domain_match", host, hint)
+        if host.endswith(f".{hint}"):
+            return DomainDecision(True, "domain_suffix_match", host, hint)
+        return decision
 
     def _configured(self) -> bool:
         return bool(
@@ -1660,7 +1862,7 @@ class PassboltAdapter:
         query: str, target_url: str | None, limit: int, username: str | None = None
     ) -> tuple[str, str | None, int, str | None]:
         normalized_query = _bounded_query(query, required=False)
-        normalized_target = _https_url(target_url, "target_url") if target_url else None
+        normalized_target = _target_hint(target_url) if target_url else None
         normalized_username = PassboltAdapter.validate_username(username)
         if not normalized_query and not normalized_target and not normalized_username:
             raise ValueError("Passbolt query, target_url or username is required")
@@ -1671,7 +1873,7 @@ class PassboltAdapter:
         target_url: str, query: str, limit: int, username: str | None = None
     ) -> tuple[str, str, int, str | None]:
         return (
-            _https_url(target_url, "target_url") if target_url else "",
+            _target_hint(target_url) if target_url else "",
             _bounded_query(query, required=False),
             _bounded_limit(limit),
             PassboltAdapter.validate_username(username),
@@ -1772,7 +1974,7 @@ class PassboltAdapter:
                 return False
         return not (
             target_url
-            and not self.domain_decision(str(resource.get("uri") or ""), target_url).matches
+            and not self.hint_decision(str(resource.get("uri") or ""), target_url).matches
         )
 
     def _score(
@@ -1800,7 +2002,7 @@ class PassboltAdapter:
             elif wanted in actual:
                 score += 20
                 reasons.append("username_contains_filter")
-        decision = self.domain_decision(str(resource.get("uri") or ""), target_url)
+        decision = self.hint_decision(str(resource.get("uri") or ""), target_url)
         if target_url and decision.matches:
             score += 60
             reasons.append(decision.reason)
@@ -1855,7 +2057,7 @@ class PassboltAdapter:
     ) -> dict[str, Any]:
         """Bind exactly one record; only that record's note is decrypted into the result."""
         if resource_id is not None:
-            target_url = _https_url(target_url, "target_url") if target_url else None
+            target_url = _target_hint(target_url) if target_url else None
             limit = _bounded_limit(limit)
             username = self.validate_username(username)
             query = ""
@@ -1889,7 +2091,7 @@ class PassboltAdapter:
                 on_origin = [
                     row
                     for row in ranked
-                    if self.domain_decision(str(row.get("uri") or ""), target_url).matches
+                    if self.hint_decision(str(row.get("uri") or ""), target_url).matches
                 ]
                 ranked = on_origin or ranked
             matches = ranked[:limit]
@@ -1898,11 +2100,11 @@ class PassboltAdapter:
         resource = matches[0] if len(matches) == 1 else None
         if target_url:
             if resource is not None:
-                decision = self.domain_decision(str(resource.get("uri") or ""), target_url)
+                decision = self.hint_decision(str(resource.get("uri") or ""), target_url)
                 domain_match, domain_reason = decision.matches, decision.reason
             elif matches:
                 domain_match = all(
-                    self.domain_decision(str(row.get("uri") or ""), target_url).matches
+                    self.hint_decision(str(row.get("uri") or ""), target_url).matches
                     for row in matches
                 )
                 domain_reason = "ambiguous_candidates"

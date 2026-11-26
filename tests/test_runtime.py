@@ -30,13 +30,16 @@ class FixtureSinks:
 
     def target(self, sink_ref, resource_uri):
         host = "example.com"
+        scheme = "https"
         if resource_uri:
             parsed = urlsplit(resource_uri)
             host = parsed.hostname or host
+            scheme = parsed.scheme or scheme
         return {
             "uri": resource_uri or "https://example.com/login",
+            "scheme": scheme,
             "host": host,
-            "port": 443,
+            "port": 80 if scheme == "http" else 443,
             "path": "/login",
             "database": None,
         }
@@ -63,6 +66,8 @@ class FixtureAdapter:
         self.entered = asyncio.Event()
         self.checkpoint_failure = False
         self.sinks = FixtureSinks()
+        # A test can point the fixture record at another site, e.g. a plain-HTTP lab.
+        self.record_uri = "https://example.com/login"
 
     def access_policy(self, label):
         return PassboltAccessPolicy(
@@ -84,13 +89,13 @@ class FixtureAdapter:
     async def search(self, *args, **kwargs):
         self.calls.append(("search", args))
         return {
-            "resources": [{"resource_id": RESOURCE, "uri": "https://example.com/login"}],
+            "resources": [{"resource_id": RESOURCE, "uri": self.record_uri}],
             "secret_disclosed": False,
         }
 
     async def select(self, *args, **kwargs):
         return {
-            "resource": {"resource_id": RESOURCE, "uri": "https://example.com/login", "username": "user"},
+            "resource": {"resource_id": RESOURCE, "uri": self.record_uri, "username": "user"},
             "domain_match": self.match,
             "confirmation_required": not self.match,
         }
@@ -291,6 +296,32 @@ async def test_record_uri_is_used_without_domain_approval(config):
     result = await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
     assert result == {"delivered_to_sink": True}
     assert adapter.calls[0][1]["resource_uri"] == "https://example.com/login"
+
+
+async def test_plain_http_record_needs_an_allowlisted_host(config):
+    """Plain HTTP changes the transport, so the host must be one the operator allows."""
+    adapter = FixtureAdapter()
+    adapter.record_uri = "http://lab.example/login"
+    _, call = harness(config, adapter)
+    chosen = await call("passbolt_select", target_url="http://lab.example/login")
+    with pytest.raises(SafeToolError) as error:
+        await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+    assert error.value.error_code == "provider_configuration_invalid"
+    assert "lab.example" in str(error.value)
+    # The sink is never entered, so the secret never left custody.
+    assert adapter.calls == []
+
+
+async def test_plain_http_record_on_an_allowlisted_host_is_delivered(config):
+    adapter = FixtureAdapter()
+    adapter.record_uri = "http://example.com/login"
+    _, call = harness(config, adapter)
+    chosen = await call("passbolt_select", target_url="http://example.com/login")
+    result = await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+    assert result == {"delivered_to_sink": True}
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "use"
+    assert kwargs["target"]["scheme"] == "http" and kwargs["target"]["port"] == 80
 
 
 async def test_cancelled_create_leaves_pending_and_conservative_lease(config):

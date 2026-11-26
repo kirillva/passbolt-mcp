@@ -14,6 +14,7 @@ from zai_passbolt.adapter import PassboltAccessPolicy, PassboltAdapter, validate
 from zai_passbolt.elicitation import confirm_share, share_summary
 from zai_passbolt.transport import (
     LocalPreDispatchDenied,
+    ProviderConfigurationError,
     ProviderError,
     ProviderHttpError,
     ProviderPreconditionFailed,
@@ -557,8 +558,9 @@ def register_tools(server: Any, runtime: Any) -> None:
         """Search decrypted v5 metadata by name, URI and username.
 
         Any combination of ``query`` (substring over name/URI/username), ``target_url``
-        (hard origin filter) and ``username`` (substring) is allowed; at least one is
-        required. With ``target_url`` alone it lists every account on that site.
+        (host filter; a bare domain or a URL, path and scheme are ignored, subdomains
+        match) and ``username`` (substring) is allowed; at least one is required. With
+        ``target_url`` alone it lists every account on that site.
         """
         adapter, _policy, resources, _folders, _vault_profile = await _passbolt_access_policy()
         PassboltAdapter.validate_search(query, target_url, limit, username)
@@ -1277,6 +1279,22 @@ def register_tools(server: Any, runtime: Any) -> None:
                 sink_ref=sink_ref,
             )
             raise
+        if target.get("scheme") == "http" and not policy.permits_host(str(target["host"])):
+            # Plain HTTP is the one case where the transport, not just the address,
+            # differs: the host then has to be one the operator allowlisted.
+            await _passbolt_audit(
+                "passbolt:use",
+                "use_secret",
+                "plain_http_denied",
+                resource_id=selection.resource_id,
+                sink_ref=sink_ref,
+                target_host=str(target["host"]),
+                target_port=int(target["port"]),
+            )
+            raise ProviderConfigurationError(
+                f"Passbolt plain-HTTP target {target['host']} is outside the operator's allowed "
+                "domains; store the record under an allowed domain or add it to the sink policy"
+            )
         if adapter.sinks.requires_job(sink_ref) and not job_ref:
             await _passbolt_audit(
                 "passbolt:use",

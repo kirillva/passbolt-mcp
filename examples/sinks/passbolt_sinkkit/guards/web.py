@@ -18,6 +18,9 @@ from urllib.parse import urlsplit
 from passbolt_sinkkit.errors import Denied, InputError, TargetError
 
 MAX_TARGETS = 200
+# Only these two ports stand for the same site: a browser upgrades plain HTTP on
+# its own, so the recorded port and the open tab may differ by scheme alone.
+_PORT_TWINS = {80: 443, 443: 80}
 MAX_STEPS = 30
 MAX_SELECTOR = 200
 MAX_PROFILE_BYTES = 262_144
@@ -77,7 +80,12 @@ def tab_marker(url: str) -> str | None:
 def pick_page(
     targets: list[Any], target: dict[str, Any], page: str | None = None
 ) -> dict[str, Any] | None:
-    """Pick exactly one tab on the record origin.
+    """Pick exactly one tab on the record host.
+
+    A browser upgrades a plain-HTTP site to HTTPS on its own, so the recorded port
+    and the tab port may legitimately differ by nothing more than that: 80 and 443
+    are tried as twins, with the exact port always preferred. Any other port is a
+    different target and is never substituted.
 
     With ``page`` the tab must carry ``?pb=<page>`` so several accounts can be
     logged in side by side on the same site. Without it the old rule applies and
@@ -85,13 +93,21 @@ def pick_page(
     """
     if len(targets) > MAX_TARGETS:
         raise InputError("too many browser targets")
-    pages = []
+    host = str(target["host"]).lower()
+    twin_port = _PORT_TWINS.get(int(target["port"]))
+    exact: list[Any] = []
+    twins: list[Any] = []
     for item in targets:
         if not isinstance(item, dict) or item.get("type") != "page":
             continue
-        if page_origin(str(item.get("url") or "")) != (target["host"], target["port"]):
+        page_host, page_port = page_origin(str(item.get("url") or ""))
+        if page_host != host:
             continue
-        pages.append(item)
+        if page_port == target["port"]:
+            exact.append(item)
+        elif twin_port is not None and page_port == twin_port:
+            twins.append(item)
+    pages = exact or twins
     if not pages:
         return None
     prefix = target["path"] if target["path"] not in {"", "/"} else ""

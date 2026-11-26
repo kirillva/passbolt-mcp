@@ -7,4 +7,5 @@
 | secret-use runtime is not enabled | PASSBOLT_USE_ENABLED off | operator decision |
 | approval required / not accepted | update/share need operator acceptance | show approval_id; wait |
 | selection expired / mismatch | select again with the same target_url | |
+| provider_configuration_invalid + `hint` | the record URI or sink config needs an operator change (for example a plain-HTTP opt-in) | relay the `hint` verbatim; do not retry |
 | decrypt/auth failure | key or session problem | `passbolt_local_diagnostics`, `passbolt_status` |

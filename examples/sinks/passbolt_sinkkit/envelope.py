@@ -79,14 +79,14 @@ def parse_target(
     if not isinstance(raw, str) or not raw:
         raise TargetError("target is missing")
     parsed = urlsplit(raw)
-    if parsed.scheme != "https" or not parsed.hostname:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise TargetError("target URL is invalid")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise TargetError("target URL is invalid")
     fallback = {
         "uri": raw,
         "host": parsed.hostname,
-        "port": parsed.port or default_port,
+        "port": parsed.port or (80 if parsed.scheme == "http" else default_port),
         "path": parsed.path or "/",
     }
     return _validate(fallback, default_port=default_port, default_database=default_database)

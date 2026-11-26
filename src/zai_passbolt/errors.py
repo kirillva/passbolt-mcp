@@ -7,6 +7,7 @@ from fastmcp.exceptions import ToolError
 
 from zai_passbolt.transport import (
     ProviderAuthenticationError,
+    ProviderConfigurationError,
     ProviderError,
     ProviderHttpError,
     ProviderNotFoundError,
@@ -29,11 +30,23 @@ class SafeToolError(ToolError):
         super().__init__(json.dumps(envelope, sort_keys=True, separators=(",", ":")))
 
 
+_SAFE_HINT_LIMIT = 300
+
+
+def _safe_hint(exc: Exception) -> str | None:
+    """Collapse a configuration error this codebase authored into one safe line."""
+    if not isinstance(exc, ProviderConfigurationError):
+        return None
+    return " ".join(str(exc).split())[:_SAFE_HINT_LIMIT] or None
+
+
 def safe_provider_error(provider: str, exc: Exception) -> SafeToolError:
     code = "provider_error"
     retryable = False
     retry_after: int | None = None
-    if isinstance(exc, ProviderRateLimited):
+    if isinstance(exc, ProviderConfigurationError):
+        code = "provider_configuration_invalid"
+    elif isinstance(exc, ProviderRateLimited):
         code = "provider_rate_limited"
         retryable = True
         retry_after = exc.retry_after_seconds
@@ -73,4 +86,7 @@ def safe_provider_error(provider: str, exc: Exception) -> SafeToolError:
     }
     if retry_after is not None:
         envelope["retry_after_seconds"] = retry_after
+    hint = _safe_hint(exc)
+    if hint:
+        envelope["hint"] = hint
     return SafeToolError(envelope)

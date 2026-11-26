@@ -13,6 +13,7 @@ import pytest
 
 from zai_passbolt.adapter import (
     METADATA_PRIVATE_KEY_OBJECT_TYPE,
+    PassboltAccessPolicy,
     PassboltAdapter,
     PassboltSinkDispatcher,
     safe_resource,
@@ -194,12 +195,67 @@ async def test_user_key_metadata_decrypts_without_shared_metadata_key_lookup() -
 
 
 @pytest.mark.parametrize(
-    "target",
-    ["http://example.com", "https://user:pass@example.com", "https://example.com?q=secret"],
+    ("hint", "authority"),
+    [
+        ("https://example.com/login", "example.com"),
+        ("http://example.com", "example.com"),
+        ("example.com", "example.com"),
+        ("example.com:8443", "example.com:8443"),
+        ("https://example.com:8443/login?tab=2#reset", "example.com:8443"),
+        ("HTTPS://Example.COM/", "example.com"),
+    ],
 )
-def test_target_url_is_strict_https(target: str) -> None:
-    with pytest.raises(ValueError, match="HTTPS"):
-        PassboltAdapter.validate_select(target, "", 10)
+def test_site_hint_keeps_only_the_host_and_an_explicit_port(hint: str, authority: str) -> None:
+    """A hint is an address-bar paste; path, query and scheme carry no meaning here."""
+    assert PassboltAdapter.validate_select(hint, "", 10)[0] == authority
+
+
+@pytest.mark.parametrize(
+    "hint",
+    ["https://user:pass@example.com", "ftp://example.com", "https://", "//example.com/path"],
+)
+def test_site_hint_refuses_credentials_and_non_http_protocols(hint: str) -> None:
+    with pytest.raises(ValueError):
+        PassboltAdapter.validate_select(hint, "", 10)
+
+
+def test_hint_matches_the_same_host_across_scheme_and_port() -> None:
+    adapter = PassboltAdapter("https://passbolt.example", "fixture-token")
+
+    assert adapter.hint_decision(
+        "http://demo.it-serv.ru/armnext/demo_kavkaz", "https://demo.it-serv.ru/"
+    ).matches is True
+    assert adapter.hint_decision(
+        "https://demo.it-serv.ru:8443/login", "https://demo.it-serv.ru"
+    ).reason == "domain_match"
+    assert adapter.hint_decision("https://demo.it-serv.ru/x", "it-serv.ru").reason == (
+        "domain_suffix_match"
+    )
+    assert adapter.hint_decision("https://notdemo.it-serv.ru/x", "demo.it-serv.ru").matches is False
+    # A hint widens discovery only; the authorization decision stays exact.
+    assert adapter.domain_decision("https://demo.it-serv.ru/x", "it-serv.ru").matches is False
+
+
+def test_host_boundary_allows_http_but_writes_stay_https_exact() -> None:
+    policy = PassboltAccessPolicy(
+        resource_ids=frozenset(),
+        folder_ids=frozenset(),
+        group_ids=frozenset(),
+        user_ids=frozenset(),
+        domain_hosts=frozenset({"example.com", "pinned.example:8443"}),
+        sink_refs=frozenset(),
+        allow_create_resource=False,
+        allow_create_folder=False,
+    )
+
+    assert policy.permits_host("http://example.com/login") is True
+    assert policy.permits_host("https://example.com:8443/login") is True
+    assert policy.permits_domain("http://example.com/login") is False
+    assert policy.permits_domain("https://example.com:8443/login") is False
+    assert policy.permits_host("https://pinned.example:8443/x") is True
+    assert policy.permits_host("https://pinned.example/x") is False
+    assert policy.permits_host("https://sub.example.com/x") is False
+
 
 
 def test_existing_v5_metadata_read_mode_omits_unsafe_uri_and_custom_fields() -> None:
