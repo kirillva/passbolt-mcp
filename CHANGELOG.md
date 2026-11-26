@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.8
+
+- `passbolt_create_resource` can now create legacy **v4** records
+  (`PASSBOLT_CREATE_LAYOUT=v4`, or `resource_type="v4-default"` for one call): plaintext
+  `name`/`username`/`uri`/`description` plus a secret encrypted for the service user, with no
+  metadata envelope — the same shape this vault's own UI produces, so it needs no metadata keys
+  and stays editable by the server afterwards. Sharing at create time is refused (each recipient
+  needs its own ciphertext): create the record, then grant access in the vault UI.
+- `resource_type` defaults to `auto` and follows the layout setting; unknown values are rejected.
+- The change log marks writes that grant nothing (a share-less create) as `approval:
+  not_required` instead of implying a human approval that never happened.
+
 ## 0.9.7
 
 - A configuration failure during a write (missing metadata private keys, an unusable record) now

@@ -766,6 +766,48 @@ class CreateAdapter(PassboltAdapter):
 
 
 @pytest.mark.asyncio
+async def test_create_v4_writes_plaintext_fields_and_one_self_secret(tmp_path: Path) -> None:
+    adapter = CreateAdapter(tmp_path)
+
+    result = await adapter.create_resource(
+        name="Legacy entry",
+        uri="postgresql://db.example:5432/app",
+        username="app",
+        secret_source={"kind": "server_generated", "length": 24},
+        description="note",
+        resource_type="v4-default",
+    )
+
+    assert result == {"resource_id": "22222222-2222-4222-8222-222222222222", "created": True}
+    payload = adapter.payload or {}
+    assert payload["name"] == "Legacy entry"
+    assert payload["username"] == "app"
+    assert payload["uri"] == "postgresql://db.example:5432/app"
+    assert payload["description"] == "note"
+    assert payload["secrets"] == [
+        {"user_id": "11111111-1111-4111-8111-111111111111", "data": "armored-secret"}
+    ]
+    # No v5 envelope at all: that is what keeps the record editable without metadata keys.
+    for key in ("metadata", "metadata_key_id", "metadata_key_type", "resource_type_id"):
+        assert key not in payload
+
+
+@pytest.mark.asyncio
+async def test_create_v4_refuses_sharing_instead_of_sending_partial_secrets(tmp_path: Path) -> None:
+    adapter = CreateAdapter(tmp_path)
+    with pytest.raises(ValueError, match="v4 create cannot share"):
+        await adapter.create_resource(
+            name="Shared",
+            uri="https://example.com/login",
+            username="operator",
+            secret_source={"kind": "server_generated", "length": 24},
+            share_with_users=["11111111-1111-4111-8111-111111111111"],
+            resource_type="v4-default",
+        )
+    assert adapter.payload is None
+
+
+@pytest.mark.asyncio
 async def test_create_uses_v5_per_user_secret_array_and_consumes_sealed_ref_on_success(
     tmp_path: Path,
 ) -> None:

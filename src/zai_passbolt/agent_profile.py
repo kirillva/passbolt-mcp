@@ -55,8 +55,9 @@ DESCRIPTIONS = {
     "passbolt_use_secret": "Deliver a selected secret to one registered sink from the record URI. "
     "page=<marker> picks the browser tab carrying ?pb=<marker> when several tabs share a site; it "
     "never changes the target. Returns status/url/account. Requires passbolt:use.",
-    "passbolt_create_resource": "Create a v5 resource with a server_generated or sealed_ref secret (no "
-    "plaintext input). Use for onboarding. Writes: idempotent, within policy.",
+    "passbolt_create_resource": "Create a v4 or v5 resource from a server_generated or sealed_ref "
+    "secret. Layout follows PASSBOLT_CREATE_LAYOUT; no plaintext input. Writes: idempotent, "
+    "within policy.",
     "passbolt_update_resource": "Update a resource (approval-gated, optimistic concurrency). First call "
     "returns approval_id; repeat after operator acceptance. Writes: overwrites.",
     "passbolt_create_folder": "Create one folder idempotently; group refs are UUIDs. Use for client "

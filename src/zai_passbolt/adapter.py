@@ -2542,8 +2542,20 @@ class PassboltAdapter:
         checkpoint: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         resume_resource_id: str | None = None,
     ) -> dict[str, Any]:
-        if resource_type != "v5-default":
-            raise ValueError("only resource_type=v5-default is allowed")
+        if resource_type not in {"v5-default", "v4-default"}:
+            raise ValueError("resource_type must be v5-default or v4-default")
+        if resource_type == "v4-default":
+            return await self._create_v4_resource(
+                name=name,
+                uri=uri,
+                username=username,
+                secret_source=secret_source,
+                description=description,
+                folder=folder,
+                share_with_groups=share_with_groups,
+                share_with_users=share_with_users,
+                checkpoint=checkpoint,
+            )
         if resume_resource_id is not None:
             resource_id = _uuid(resume_resource_id, "resource_id")
             if not share_with_groups and not share_with_users:
@@ -2600,6 +2612,52 @@ class PassboltAdapter:
                 users=share_with_users,
                 permission="read",
             )
+        return {"resource_id": resource_id, "created": True}
+
+    async def _create_v4_resource(
+        self,
+        *,
+        name: str,
+        uri: str,
+        username: str,
+        secret_source: Mapping[str, Any],
+        description: str | None,
+        folder: str | None,
+        share_with_groups: list[str] | None,
+        share_with_users: list[str] | None,
+        checkpoint: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> dict[str, Any]:
+        """Create a legacy v4 record: plaintext fields plus a per-user secret, no metadata envelope.
+
+        This is the layout this Passbolt instance's own UI produces, so a record created here stays
+        editable by this server without metadata keys. The secret is encrypted once for the service
+        user; sharing needs a ciphertext per recipient, so it stays a vault UI action.
+        """
+        if share_with_groups or share_with_users:
+            raise ValueError(
+                "Passbolt v4 create cannot share: create the record first and grant access in the vault UI"
+            )
+        validated_name = _text(name, "name", 255, required=True)
+        validated_username = _text(username, "username", 255)
+        validated_description = _text(description, "description", 10_000)
+        validated_uri = _new_uri(uri)
+        secret, sealed_path = await asyncio.to_thread(self._secret_from_source, secret_source)
+        encrypted_secret = await self._encrypt_json({"password": secret}, self.user_fingerprint)
+        payload = {
+            "name": validated_name,
+            "username": validated_username,
+            "uri": validated_uri,
+            "description": validated_description,
+            "folder_parent_id": await self._folder_id(folder),
+            "secrets": [{"user_id": self.service_user_id, "data": encrypted_secret}],
+        }
+        result = _unwrap(await self._request("POST", "/resources.json", payload=payload))
+        if not isinstance(result, dict) or not result.get("id"):
+            raise ProviderResponseError("Passbolt create resource response is invalid")
+        resource_id = _uuid(str(result["id"]), "resource_id")
+        if checkpoint is not None:
+            await checkpoint({"checkpoint": "resource_created", "resource_id": resource_id})
+        await asyncio.to_thread(self._consume_sealed_ref, sealed_path)
         return {"resource_id": resource_id, "created": True}
 
     async def _resource(self, resource_id: str) -> dict[str, Any]:

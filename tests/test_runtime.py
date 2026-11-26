@@ -437,7 +437,43 @@ async def test_a_configuration_failure_does_not_block_the_next_attempt(config):
     assert retried["updated"] is True
 
 
+async def test_create_uses_the_configured_v4_layout(config):
+    """PASSBOLT_CREATE_LAYOUT=v4 creates a legacy record: plaintext fields, no metadata keys."""
+    adapter = FixtureAdapter()
+    adapter.domain_policy = "any"
+    _, call = harness(
+        replace(config, passbolt_write_approval="auto", passbolt_create_layout="v4"), adapter
+    )
+    result = await call(
+        "passbolt_create_resource",
+        name="legacy-new",
+        uri="postgresql://db.example:5432/app",
+        username="app",
+        secret_source={"kind": "server_generated", "length": 24},
+        share_mode="none",
+        idempotency_key="create-v4",
+    )
+    # A share-less create grants nothing, so it is not approval-gated at all.
+    assert result["created"] is True and "approval" not in result
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "create" and kwargs["resource_type"] == "v4-default"
+
+    log = config.state_path.parent / "data-changes.jsonl"
+    [entry] = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert entry["operation"] == "create_resource" and entry["approval"] == "not_required"
+    assert entry["changes"]["name"] == "legacy-new"
+    assert entry["changes"]["uri"] == "postgresql://db.example:5432/app"
+    assert entry["changes"]["secret_source"] == {"kind": "server_generated"}
+
+
 def test_write_approval_defaults_to_operator_and_is_validated(config):
+    assert config.passbolt_write_approval == "operator"
+    assert config.passbolt_create_layout == "v5"
+    with pytest.raises(ValueError, match="PASSBOLT_WRITE_APPROVAL"):
+        replace(config, passbolt_write_approval="sometimes")
+    with pytest.raises(ValueError, match="PASSBOLT_CREATE_LAYOUT"):
+        replace(config, passbolt_create_layout="v9")
+
     assert config.passbolt_write_approval == "operator"
     with pytest.raises(ValueError, match="PASSBOLT_WRITE_APPROVAL"):
         replace(config, passbolt_write_approval="sometimes")

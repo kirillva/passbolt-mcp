@@ -527,7 +527,7 @@ def register_tools(server: Any, runtime: Any) -> None:
                 )
             return await resume_pending(existing)
         approval: UUID | None = None
-        approval_mode = "operator"
+        approval_mode = "operator" if approval_required else "not_required"
         if approval_required:
             if not approval_id:
                 if settings.passbolt_write_approval == "auto":
@@ -837,16 +837,24 @@ def register_tools(server: Any, runtime: Any) -> None:
         share_with_groups: list[str] | None = None,
         share_with_users: list[str] | None = None,
         share_mode: str = "explicit",
-        resource_type: str = "v5-default",
+        resource_type: str = "auto",
         approval_id: str | None = None,
     ) -> dict[str, Any]:
-        """Create a v5 resource from server-generated or sealed server ingress."""
+        """Create a v4 or v5 resource from a server_generated or sealed_ref secret.
+
+        No plaintext input; the layout follows PASSBOLT_CREATE_LAYOUT. Writes: idempotent,
+        within policy.
+        """
         if not settings.passbolt_write_enabled:
             await _passbolt_audit("passbolt:write", "create_resource", "disabled")
             raise PermissionError("Passbolt write runtime is not enabled")
         adapter, policy, _resources, folders, _vault_profile = await _passbolt_access_policy()
         if not policy.allow_create_resource or not policy.permits_domain(uri):
             raise PermissionError("Passbolt create resource policy denied")
+        if resource_type == "auto":
+            resource_type = "v4-default" if settings.passbolt_create_layout == "v4" else "v5-default"
+        if resource_type not in {"v5-default", "v4-default"}:
+            raise ValueError("resource_type must be auto, v5-default or v4-default")
         if folder is not None:
             try:
                 normalized_folder = str(UUID(folder))

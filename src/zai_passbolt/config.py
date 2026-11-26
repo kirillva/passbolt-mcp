@@ -29,6 +29,9 @@ class ServiceConfig:
     # "auto": the operator pre-authorised writes, so the server records a standing
     # approval bound to the same digest and applies the write in one call.
     passbolt_write_approval: str = "operator"
+    # Which layout passbolt_create_resource writes: "v5" (typed, encrypted metadata) or "v4"
+    # (plaintext fields, no metadata keys needed — what this vault's own UI produces).
+    passbolt_create_layout: str = "v5"
     passbolt_share_elicitation: str = "auto"
     passbolt_use_enabled: bool = False
     passbolt_selection_ttl_seconds: int = 600
@@ -74,6 +77,8 @@ class ServiceConfig:
             raise ValueError("PASSBOLT_SHARE_ELICITATION must be auto, required or off")
         if self.passbolt_write_approval not in {"operator", "auto"}:
             raise ValueError("PASSBOLT_WRITE_APPROVAL must be operator or auto")
+        if self.passbolt_create_layout not in {"v4", "v5"}:
+            raise ValueError("PASSBOLT_CREATE_LAYOUT must be v4 or v5")
         copied = dict(self.bindings)
         if any(
             not isinstance(actor, str)
@@ -114,6 +119,7 @@ class ServiceConfig:
             local_scopes=frozenset(os.environ.get("PASSBOLT_LOCAL_SCOPES", "passbolt:read").split()),
             passbolt_write_enabled=flag("PASSBOLT_WRITE_ENABLED"),
             passbolt_write_approval=os.environ.get("PASSBOLT_WRITE_APPROVAL", "operator").strip().lower(),
+            passbolt_create_layout=os.environ.get("PASSBOLT_CREATE_LAYOUT", "v5").strip().lower(),
             passbolt_share_elicitation=os.environ.get("PASSBOLT_SHARE_ELICITATION", "auto").strip().lower(),
             passbolt_use_enabled=flag("PASSBOLT_USE_ENABLED"),
             enabled=flag("PASSBOLT_ENABLED", "true"),

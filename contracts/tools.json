@@ -183,7 +183,7 @@
           "type": "string"
         },
         "resource_type": {
-          "default": "v5-default",
+          "default": "auto",
           "type": "string"
         },
         "approval_id": {
@@ -211,7 +211,7 @@
       "additionalProperties": true,
       "type": "object"
     },
-    "description": "Create a v5 resource with a server_generated or sealed_ref secret (no plaintext input). Use for onboarding. Writes: idempotent, within policy."
+    "description": "Create a v4 or v5 resource from a server_generated or sealed_ref secret. Layout follows PASSBOLT_CREATE_LAYOUT; no plaintext input. Writes: idempotent, within policy."
   },
   "passbolt_update_resource": {
     "inputSchema": {
