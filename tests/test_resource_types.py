@@ -389,7 +389,7 @@ async def test_resource_and_metadata_type_mismatch_is_refused(
     resource_type: str, metadata: dict[str, Any]
 ) -> None:
     adapter = UpdateVaultAdapter(resource_type, metadata)
-    with pytest.raises(ProviderResponseError, match="does not match its metadata"):
+    with pytest.raises(ValueError, match="does not match its metadata"):
         await adapter.update({"name": "Renamed"})
     assert adapter.requests == [] and adapter.encrypted == []
 

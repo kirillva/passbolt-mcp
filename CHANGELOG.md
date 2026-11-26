@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.4
+
+- Two local shape checks during a v5 update (missing metadata, metadata type mismatch) raised a
+  provider-response error, which the write gate settled as an unknown outcome: the request digest
+  then blocked every retry as "pending reconciliation". They are validation errors about the
+  record, so they now raise `ValueError` and settle the attempt as failed.
+
 ## 0.9.3
 
 - The write path picks the envelope by **layout**, not by type id: a record with no v5 `metadata`

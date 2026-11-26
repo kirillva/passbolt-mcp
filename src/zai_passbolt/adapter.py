@@ -2704,10 +2704,11 @@ class PassboltAdapter:
             # The secret source generates passwords, not PINs; PIN entries have no uri or username.
             raise ValueError("Passbolt v5-pin-code update accepts only name and description")
         if not resource.get("metadata"):
-            raise ProviderResponseError("Passbolt resource metadata is invalid")
+            # A local shape check, not a provider answer: the caller can act on this.
+            raise ValueError("Passbolt resource metadata is invalid")
         decrypted = await self._decrypt_metadata(resource)
         if str(decrypted.get("resource_type_id") or "").lower() != resource_type_id:
-            raise ProviderResponseError("Passbolt resource type does not match its metadata")
+            raise ValueError("Passbolt resource type does not match its metadata")
         if resource_type_id == V5_PIN_CODE_RESOURCE_TYPE_ID:
             current_pin = validate_v5_pin_code_metadata(decrypted)
             metadata = validate_v5_pin_code_metadata(
