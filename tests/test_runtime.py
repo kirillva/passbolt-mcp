@@ -48,6 +48,18 @@ class FixtureSinks:
     def approval_mode(self, sink_ref):
         return "never"
 
+    def target_from_note(self, sink_ref, note, resource_uri):
+        assert "scheme=http" in note
+        return {
+            "uri": resource_uri,
+            "scheme": "http",
+            "host": "lab.example",
+            "port": 80,
+            "path": "/login",
+            "database": None,
+            "source": "note",
+        }
+
     def requires_job(self, sink_ref):
         return False
 
@@ -104,6 +116,9 @@ class FixtureAdapter:
             "domain_match": self.match,
             "confirmation_required": not self.match,
         }
+
+    async def resource_note(self, resource_id):
+        return "scheme=http\nhost=lab.example\npath=/login"
 
     def domain_decision(self, resource, target):
         return DomainDecision(
@@ -325,6 +340,21 @@ async def test_plain_http_record_on_an_allowlisted_host_is_delivered(config):
     [(kind, kwargs)] = adapter.calls
     assert kind == "use"
     assert kwargs["target"]["scheme"] == "http" and kwargs["target"]["port"] == 80
+
+
+async def test_custom_record_resolves_its_target_from_the_note(config):
+    """custom:// keeps the address in the note; the sink still receives a plain target."""
+    adapter = FixtureAdapter()
+    adapter.record_uri = "custom://lab"
+    _, call = harness(config, adapter)
+    chosen = await call("passbolt_select", query="lab")
+    assert chosen["resource"]["uri"] == "custom://lab"
+    result = await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+    assert result == {"delivered_to_sink": True}
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "use"
+    assert kwargs["target"]["source"] == "note"
+    assert (kwargs["target"]["host"], kwargs["target"]["port"]) == ("lab.example", 80)
 
 
 async def test_a_failed_tool_call_lands_in_the_local_error_log(config, monkeypatch):

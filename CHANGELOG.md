@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2
+
+- `custom://<label>` records keep their connection fields in the note: `scheme`, `host`, `port`,
+  `database`, `path` as `key = value` lines, comments allowed, 8 KB bound, one value per key. The
+  server reads and validates the note when the secret is delivered and hands the sink an ordinary
+  target (`"source": "note"`, audited as `custom_note`); the note itself never reaches the sink,
+  and a note that tries to carry a password or token is refused.
+
 ## 0.8.1
 
 - The pg sinks unwrap Debian's `/usr/bin/psql` (pg_wrapper). On a client-only host that wrapper

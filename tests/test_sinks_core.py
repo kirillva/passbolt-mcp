@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from zai_passbolt.adapter import PassboltSinkDispatcher, _sink_target
+from zai_passbolt.adapter import PassboltSinkDispatcher, _sink_target, parse_connection_note
 from zai_passbolt.errors import safe_provider_error
 from zai_passbolt.transport import ProviderConfigurationError, ProviderError
 
@@ -94,6 +94,114 @@ def test_sink_schemes_and_bare_host_are_per_sink() -> None:
         ssh_target("ssh://bastion.example/home")
     with pytest.raises(ProviderConfigurationError, match="credentials"):
         pg_target("user:pw@db.example:5432/app", allow_bare_host=True)
+
+
+def test_connection_note_resolves_a_custom_record() -> None:
+    target = parse_connection_note(
+        """
+        # lab database, address lives here instead of the URI
+        scheme = postgresql
+        host = dev-ws-v-02
+        port = 6543
+        database = app
+        """,
+        resource_uri="custom://lab",
+        schemes=PG_SCHEMES,
+        default_port=5432,
+        default_database="postgres",
+    )
+    assert target == {
+        "uri": "custom://lab",
+        "scheme": "postgresql",
+        "host": "dev-ws-v-02",
+        "port": 6543,
+        "path": "/",
+        "database": "app",
+        "source": "note",
+    }
+
+    web = parse_connection_note(
+        "scheme=https\nhost=portal.example\npath=/login",
+        resource_uri="custom://portal",
+        schemes=WEB_SCHEMES,
+        default_port=443,
+        default_database=None,
+    )
+    assert (web["port"], web["path"], web["database"]) == (443, "/login", None)
+
+    ssh = parse_connection_note(
+        "scheme=ssh\nhost=bastion.example",
+        resource_uri="custom://bastion",
+        schemes=frozenset({"ssh"}),
+        default_port=22,
+        default_database=None,
+    )
+    assert ssh["port"] == 22 and ssh["path"] == "/"
+
+
+@pytest.mark.parametrize(
+    ("note", "database", "message"),
+    [
+        ("   ", None, "no connection note"),
+        ("host=db", None, "scheme must be"),
+        ("scheme=postgresql", "postgres", "no usable host"),
+        ("scheme=postgresql\nhost=db\npassword=x", "postgres", "credentials stay"),
+        ("scheme=postgresql\nhost=db\nsslmode=require", "postgres", "unknown key"),
+        ("scheme=postgresql\nhost=db\nport=0", "postgres", "out of range"),
+        ("scheme=postgresql\nhost=db\ndatabase=bad name", "postgres", "database name"),
+        ("scheme=postgresql\nhost=db\npath=/x", "postgres", "expects database"),
+        ("scheme=https\nhost=web\nscheme=https", None, "repeats scheme"),
+        ("scheme=https\nhost=web\ndatabase=app", None, "expects path"),
+        ("scheme=https\nhost=web\npath=../etc", None, "path is invalid"),
+        ("scheme=ssh\nhost=b\npath=/home", None, "path for ssh"),
+        ("scheme=https\nhost=web\n#" + "x" * 9000, None, "too large"),
+    ],
+)
+def test_connection_note_rejects_unsafe_or_unclear_input(
+    note: str, database: str | None, message: str
+) -> None:
+    with pytest.raises(ProviderConfigurationError, match=message):
+        parse_connection_note(
+            note,
+            resource_uri="custom://x",
+            schemes=WEB_SCHEMES | PG_SCHEMES | {"ssh"},
+            default_port=443,
+            default_database=database,
+        )
+
+
+def test_custom_uri_is_not_resolved_from_the_uri_itself() -> None:
+    with pytest.raises(ProviderConfigurationError, match="note"):
+        _sink_target("custom://lab", default_port=443, default_database=None, schemes=WEB_SCHEMES)
+
+
+def test_dispatcher_resolves_a_custom_note(tmp_path: Path) -> None:
+    registry = tmp_path / "sinks.json"
+    python = str(Path(sys.executable).resolve())
+    _registry(
+        registry,
+        {
+            "pg_ro": {
+                "kind": "secure_fill",
+                "command": [python, "-c", "pass"],
+                "executable_sha256": _sha256(Path(python)),
+                "default_port": 5432,
+                "default_database": "postgres",
+                "uri_schemes": ["postgresql", "postgres"],
+            }
+        },
+    )
+    target = PassboltSinkDispatcher(registry).target_from_note(
+        "pg_ro",
+        "scheme=postgresql\nhost=dev-ws-v-02\nport=6543\ndatabase=app",
+        "custom://lab",
+    )
+    assert (target["host"], target["port"], target["database"], target["source"]) == (
+        "dev-ws-v-02",
+        6543,
+        "app",
+        "note",
+    )
 
 
 def test_uri_schemes_default_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:

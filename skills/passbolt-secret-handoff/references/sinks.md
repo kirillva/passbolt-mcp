@@ -35,6 +35,10 @@ domain allowlist to satisfy: the vault is the list. A browser upgrades HTTP on i
 open tab may sit on 443 while the record says 80 — same site, the sink follows it. One trap: a
 site that calls its own API over plain HTTP must keep its tab on HTTP too.
 
+A `custom://<label>` record names its address in the note instead (`scheme`, `host`, `port`,
+`database`, `path` as `key = value` lines): the server resolves and validates it, and the sink
+receives an ordinary target without ever seeing the note.
+
 ## Several accounts on one site (browser sinks)
 
 When several tabs are open on the same origin, an unqualified delivery is refused. Open or navigate

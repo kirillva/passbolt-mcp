@@ -10,7 +10,12 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from zai_passbolt import update_check
-from zai_passbolt.adapter import PassboltAccessPolicy, PassboltAdapter, validate_page_marker
+from zai_passbolt.adapter import (
+    PassboltAccessPolicy,
+    PassboltAdapter,
+    is_custom_uri,
+    validate_page_marker,
+)
 from zai_passbolt.elicitation import confirm_share, share_summary
 from zai_passbolt.transport import (
     LocalPreDispatchDenied,
@@ -1268,7 +1273,11 @@ def register_tools(server: Any, runtime: Any) -> None:
             )
             raise PermissionError("Passbolt resource policy denied")
         try:
-            target = adapter.sinks.target(sink_ref, selection.resource_uri)
+            if is_custom_uri(selection.resource_uri):
+                note = await adapter.resource_note(selection.resource_id)
+                target = adapter.sinks.target_from_note(sink_ref, note, selection.resource_uri)
+            else:
+                target = adapter.sinks.target(sink_ref, selection.resource_uri)
             approval_mode = adapter.sinks.approval_mode(sink_ref)
         except (PermissionError, ProviderError):
             await _passbolt_audit(
@@ -1282,6 +1291,8 @@ def register_tools(server: Any, runtime: Any) -> None:
         # The record URI is the only source of the target; the advisory list is recorded,
         # never enforced: the operator's vault already holds just the addresses they meant.
         notes = ["record_uri"]
+        if target.get("source") == "note":
+            notes.append("custom_note")
         if target.get("scheme") == "http":
             notes.append("plain_http")
         advisory = policy.domain_advisory(str(target["host"]))

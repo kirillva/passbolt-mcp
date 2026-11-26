@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 50
 MAX_QUERY_LENGTH = 256
+MAX_CONNECTION_NOTE_BYTES = 8_192
 MAX_RESOURCE_SCAN = 2_000
 V5_DEFAULT_RESOURCE_TYPE_ID = "dd1f723d-0d1e-513f-8218-4055dc0530d0"
 V5_PIN_CODE_RESOURCE_TYPE_ID = "4357bbc7-ed4d-52ff-b59d-9f7f17881bb3"
@@ -441,6 +442,108 @@ def _bundle_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
+def is_custom_uri(value: str | None) -> bool:
+    """A `custom://` record keeps its connection fields in the note."""
+    return isinstance(value, str) and value.strip().lower().startswith("custom://")
+
+
+def parse_connection_note(
+    note: str | None,
+    *,
+    resource_uri: str | None,
+    schemes: frozenset[str],
+    default_port: int,
+    default_database: str | None,
+) -> dict[str, Any]:
+    """Resolve a `custom://` record from its note: `key = value` lines, allowlisted keys.
+
+    The note is operator-authored but still untrusted text: only the connection
+    fields below are accepted, each one validated, and credentials are refused so a
+    note can never become a second, hidden password store. The sink never sees the
+    note itself — only this derived target.
+    """
+    if not isinstance(note, str) or not note.strip():
+        raise ProviderConfigurationError(
+            "Passbolt custom:// record has no connection note; add scheme/host/port lines to it"
+        )
+    if len(note.encode("utf-8")) > MAX_CONNECTION_NOTE_BYTES:
+        raise ProviderConfigurationError("Passbolt connection note is too large")
+    allowed = {"scheme", "host", "port", "database", "path"}
+    forbidden = {"username", "user", "password", "pass", "token", "secret", "api_key", "apikey"}
+    values: dict[str, str] = {}
+    for raw_line in note.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        separator = "=" if "=" in line else ":" if ":" in line else ""
+        if not separator:
+            raise ProviderConfigurationError(
+                "Passbolt connection note must be key = value lines (scheme, host, port, database, path)"
+            )
+        key, _, value = line.partition(separator)
+        key = key.strip().lower()
+        value = value.strip()
+        if key in forbidden:
+            raise ProviderConfigurationError(
+                f"Passbolt connection note must not carry {key}; credentials stay in the vault"
+            )
+        if key not in allowed:
+            raise ProviderConfigurationError(
+                "Passbolt connection note has an unknown key; allowed: "
+                + ", ".join(sorted(allowed))
+            )
+        if len(value) > 256 or any(ord(char) < 32 for char in value):
+            raise ProviderConfigurationError(f"Passbolt connection note value for {key} is invalid")
+        if key in values:
+            raise ProviderConfigurationError(f"Passbolt connection note repeats {key}")
+        values[key] = value
+
+    scheme = values.get("scheme", "").lower()
+    if scheme not in schemes:
+        raise ProviderConfigurationError(
+            "Passbolt connection note scheme must be one of: " + ", ".join(sorted(schemes))
+        )
+    host = _site_host(values.get("host", ""))
+    if host is None:
+        raise ProviderConfigurationError("Passbolt connection note has no usable host")
+    port = _STANDARD_PORTS.get(scheme, default_port)
+    if "port" in values:
+        try:
+            port = int(values["port"])
+        except ValueError as exc:
+            raise ProviderConfigurationError("Passbolt connection note port is invalid") from exc
+        if not 1 <= port <= 65_535:
+            raise ProviderConfigurationError("Passbolt connection note port is out of range")
+    path = values.get("path") or "/"
+    if not path.startswith("/") or ".." in path.split("/"):
+        raise ProviderConfigurationError("Passbolt connection note path is invalid")
+    database: str | None = None
+    if default_database is not None:
+        if "path" in values:
+            raise ProviderConfigurationError(
+                "Passbolt connection note uses path, but this sink expects database"
+            )
+        database = values.get("database") or default_database
+        if _DATABASE_NAME_RE.fullmatch(database) is None:
+            raise ProviderConfigurationError("Passbolt connection note database name is invalid")
+    else:
+        if "database" in values:
+            raise ProviderConfigurationError(
+                "Passbolt connection note uses database, but this sink expects path"
+            )
+        if scheme == "ssh" and path not in {"", "/"}:
+            raise ProviderConfigurationError("Passbolt connection note must not set a path for ssh")
+    return {
+        "uri": resource_uri,
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "path": path,
+        "database": database,
+        "source": "note",
+    }
+
+
 def _sink_target(
     uri: str | None,
     *,
@@ -463,6 +566,11 @@ def _sink_target(
             "Passbolt resource has no URI; the sink target cannot be derived"
         )
     raw = uri.strip()
+    if is_custom_uri(raw):
+        raise ProviderConfigurationError(
+            "A custom:// record resolves its address from the record note, not from the URI; "
+            "the server reads it when the secret is delivered"
+        )
     has_scheme = "://" in raw
     if not has_scheme and not allow_bare_host:
         allowed = ", ".join(sorted(f"{name}://host" for name in schemes))
@@ -980,6 +1088,22 @@ class PassboltSinkDispatcher:
             default_database=database,
             schemes=self.uri_schemes(config),
             allow_bare_host=self.allow_bare_host(config),
+        )
+
+    def target_from_note(
+        self, sink_ref: str, note: str | None, resource_uri: str | None
+    ) -> dict[str, Any]:
+        """Resolve a `custom://` record from its note: the note carries scheme/host/port."""
+        config = self.definition(sink_ref)
+        database = config.get("default_database")
+        if database is not None and not isinstance(database, str):
+            raise ProviderError("Passbolt sink default database is invalid")
+        return parse_connection_note(
+            note,
+            resource_uri=resource_uri,
+            schemes=self.uri_schemes(config),
+            default_port=self._default_port(config),
+            default_database=database,
         )
 
     @staticmethod
@@ -2479,6 +2603,19 @@ class PassboltAdapter:
         if not isinstance(body, dict):
             raise ProviderResponseError("Passbolt resource response is invalid")
         return body
+
+    async def resource_note(self, resource_id: str) -> str | None:
+        """Decrypted v5 description (the note) for one resource, or None.
+
+        Used only to resolve a `custom://` record: the note stays inside this server
+        process, and only the parsed connection fields reach a sink.
+        """
+        resource = await self._resource(resource_id)
+        hydrated = await self._hydrate_metadata(resource)
+        note = hydrated.get("description")
+        if isinstance(note, str) and note.strip():
+            return note[: MAX_CONNECTION_NOTE_BYTES * 2]
+        return None
 
     async def update_resource(
         self,
