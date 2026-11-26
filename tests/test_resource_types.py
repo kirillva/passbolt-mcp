@@ -437,6 +437,14 @@ async def test_default_uri_update_changes_only_the_primary_uri(uri: str | None, 
     assert metadata == {**rich_metadata(), "uris": expected}
 
 
+async def test_default_uri_update_accepts_plain_http_and_database_schemes() -> None:
+    """Writes accept the standard scheme set; only credentials and unknown forms are refused."""
+    for uri in ("http://insecure.example", "postgresql://db.example:5432/app", "ssh://bastion.example"):
+        adapter = UpdateVaultAdapter(V5_DEFAULT_RESOURCE_TYPE_ID, rich_metadata())
+        await adapter.update({"uri": uri})
+        assert adapter.encrypted[0]["uris"][0] == uri
+
+
 async def test_default_uri_update_adds_a_primary_uri_when_there_is_none() -> None:
     adapter = UpdateVaultAdapter(V5_DEFAULT_RESOURCE_TYPE_ID, {**default_metadata(), "uris": []})
     await adapter.update({"uri": "https://new.example"})
@@ -444,7 +452,7 @@ async def test_default_uri_update_adds_a_primary_uri_when_there_is_none() -> Non
 
 
 @pytest.mark.parametrize(
-    "uri", ["http://insecure.example", "https://user:pw@example.com", 7, "https://example.com/" + "x" * 1100]
+    "uri", ["ftp://insecure.example", "https://user:pw@example.com", 7, "https://example.com/" + "x" * 1100]
 )
 async def test_default_uri_update_rejects_invalid_uri_without_any_write(uri: Any) -> None:
     adapter = UpdateVaultAdapter(V5_DEFAULT_RESOURCE_TYPE_ID, rich_metadata())

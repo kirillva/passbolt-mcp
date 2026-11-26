@@ -16,6 +16,8 @@ from zai_passbolt.adapter import (
     PassboltAccessPolicy,
     PassboltAdapter,
     PassboltSinkDispatcher,
+    _new_uri,
+    _replace_primary_uri,
     safe_resource,
     validate_v5_metadata,
 )
@@ -345,6 +347,19 @@ def test_v5_metadata_write_stays_custom_field_free() -> None:
 
     with pytest.raises(ValueError, match="custom fields"):
         validate_v5_metadata(payload)
+
+
+def test_primary_uri_update_accepts_standard_schemes() -> None:
+    """The update path uses the same scheme set as create, not HTTPS only."""
+    assert _new_uri("postgresql://db.example:5432/app") == "postgresql://db.example:5432/app"
+    assert _new_uri("ssh://bastion.example") == "ssh://bastion.example"
+    assert _new_uri("http://legacy.example/login") == "http://legacy.example/login"
+    for rejected in ("ftp://legacy.example/login", "db.example:5432/app", "https://u:p@example.com"):
+        with pytest.raises(ValueError):
+            _new_uri(rejected)
+    assert _replace_primary_uri(
+        ["https://old.example/x", "https://keep.example/y"], "postgresql://db.example/app"
+    ) == ["postgresql://db.example/app", "https://keep.example/y"]
 
 
 def test_domain_match_is_exact_origin_unless_relation_is_explicitly_allowlisted() -> None:

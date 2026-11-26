@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.4
+
+- Updating a record's URI used its own HTTPS-only validator, so a `postgresql://` or `ssh://`
+  address could be created but never written to an existing record. The update path now accepts
+  the same scheme set as create (`http`, `https`, `postgresql`, `postgres`, `ssh`) and still
+  refuses credentials, a query, a fragment or a bare host.
+
 ## 0.8.3
 
 - Every applied write now leaves a local record in `state/data-changes.jsonl` (0600, rotated):

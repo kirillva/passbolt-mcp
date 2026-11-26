@@ -982,8 +982,8 @@ def _replace_primary_uri(uris: list[Any], value: Any) -> list[Any]:
 
 
 def _new_uri(value: str) -> str:
-    """Validate a uri written by this server: HTTPS, no credentials, within the v5 schema length."""
-    uri = _https_url(value, "uri")
+    """Validate a uri written by this server: a known scheme, no credentials, v5 length."""
+    uri = _site_url(value, "uri")
     if len(uri) > MAX_URI_LENGTH:
         raise ValueError(f"uri must be at most {MAX_URI_LENGTH} characters")
     return uri
