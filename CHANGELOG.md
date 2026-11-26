@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.4
+
+- Every failed tool call leaves a local, private line in
+  `~/.config/passbolt-mcp/state/tool-errors.jsonl` (0600, rotated at 2 MB, two rotations):
+  tool, `outcome`, safe `code`, exception class, our own `hint`, `actor`, `execution_id`,
+  `duration_ms` and a whitelisted argument shape. Never a password, `secret_source`, note, full
+  URI or provider message, and a broken log never fails a call. `PASSBOLT_TOOL_LOG=0` disables
+  it; `PASSBOLT_TOOL_LOG_PATH` relocates it inside `$HOME`. `scripts/tool_log_report.py` groups
+  the log by tool/code/hint and prints the argument shapes worth fixing in the guides — the
+  point of the file is better instructions, not another dashboard.
+
 ## 0.7.3
 
 - The refusal check reads every visible dialog, not just the first. On a real stand the login
