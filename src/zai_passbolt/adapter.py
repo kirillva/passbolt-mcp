@@ -2693,8 +2693,10 @@ class PassboltAdapter:
             raise ValueError("Passbolt update fields are empty or unsupported")
         # The update keeps the existing resource type; it never converts one type into another.
         resource_type_id = str(resource.get("resource_type_id") or "").lower()
-        if resource_type_id == V4_PASSWORD_DESCRIPTION_RESOURCE_TYPE_ID:
-            # Legacy v4 resources keep plaintext metadata; the v5 envelope does not apply.
+        if not resource.get("metadata"):
+            # Legacy layout: plaintext fields, no v5 metadata envelope. Passbolt may keep this
+            # layout even after it rewrites the type id (a v4 record converted to a v5 type), so
+            # the layout — not the type id — decides which path can rewrite it.
             return await self._update_v4_resource(resource, fields)
         if resource_type_id not in UPDATABLE_RESOURCE_TYPE_IDS:
             raise ValueError("Passbolt update supports only v5-default and v5-pin-code resources")

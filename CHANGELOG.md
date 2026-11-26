@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.3
+
+- The write path picks the envelope by **layout**, not by type id: a record with no v5 `metadata`
+  is rewritten through the plaintext path even when Passbolt has renamed its type to a v5 one.
+  That hybrid is exactly what Passbolt leaves behind when it converts a v4 record, and it made the
+  follow-up note update fail with "resource metadata is invalid".
+
 ## 0.9.2
 
 - `password-string` is updatable. Passbolt converts a v4 record to that v5 type when its metadata is

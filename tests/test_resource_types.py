@@ -618,6 +618,20 @@ async def test_v4_update_changes_metadata_without_touching_secrets() -> None:
     assert "secrets" not in payload
 
 
+async def test_legacy_layout_is_detected_by_missing_metadata_not_by_type_id() -> None:
+    """Passbolt can rename a v4 record's type to a v5 one while keeping the plaintext layout."""
+    metadata_type = "669f8c64-242a-59fb-92fc-81f660975fd3"
+    adapter = V4UpdateAdapter(resource_type_id=metadata_type)
+    await adapter.update_resource(
+        resource_id=V4_RESOURCE_ID,
+        fields={"description": "databases: postgres"},
+        expected_modified=MODIFIED,
+    )
+    payload = adapter.requests[0][2]
+    assert payload["description"] == "databases: postgres"
+    assert "secrets" not in payload
+
+
 async def test_v4_update_keeps_untouched_fields_and_can_clear_the_uri() -> None:
     adapter = V4UpdateAdapter()
     await adapter.update_resource(
