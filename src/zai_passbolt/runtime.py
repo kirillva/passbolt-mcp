@@ -252,7 +252,9 @@ class Runtime:
                 converted.error_code,
                 converted.envelope.get("hint"),
                 type(exc).__name__,
-                str(exc) if isinstance(exc, ValueError) else None,
+                # Our own error messages are static and secret-free; provider payloads are not
+                # messages (they stay in body_preview), so this is safe to keep locally.
+                str(exc) if isinstance(exc, (ValueError, ProviderError)) else None,
             )
             raise converted from None
         finally:

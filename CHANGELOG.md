@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.5
+
+- The local error log keeps the message of every failure this project authors (`ValueError`,
+  `ProviderError`, `ProviderResponseError`), not only validation ones. Those strings are static
+  and secret-free — provider payloads never become messages — and without them a failed write read
+  as "provider_response_invalid" with no clue which check refused it.
+
 ## 0.9.4
 
 - Two local shape checks during a v5 update (missing metadata, metadata type mismatch) raised a
