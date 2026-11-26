@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SINKS = ROOT / "examples" / "sinks"
 sys.path.insert(0, str(SINKS))
 
+from passbolt_sinkkit.cli import DEFAULT_DATABASES, PROTOCOLS  # noqa: E402
 from passbolt_sinkkit.errors import (  # noqa: E402
     AuthRejected,
     AuthUnconfirmed,
@@ -269,3 +270,8 @@ def test_heuristic_fills_the_two_fields_and_presses_the_button(monkeypatch: pyte
     assert result["status"] == "logged_in"
     assert [value for _, _, value in device.typed] == ["operator", "s3cret"]
     assert device.clicks == [{"resource_id": OK_ID}]
+
+
+def test_the_android_protocol_is_wired_into_the_cli() -> None:
+    assert PROTOCOLS["android"] == "android_fill"
+    assert DEFAULT_DATABASES["android"] is None

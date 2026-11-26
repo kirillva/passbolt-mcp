@@ -26,7 +26,7 @@ from passbolt_sinkkit.results import Result
 
 PROTOCOLS = {"web": "login_fill", "pg": "pg_ro", "ssh": "ssh_ops", "android": "android_fill"}
 DEFAULT_PORTS = {"web": 443, "pg": 5432, "ssh": 22, "android": 5037}
-DEFAULT_DATABASES = {"web": None, "pg": "postgres", "ssh": None}
+DEFAULT_DATABASES = {"web": None, "pg": "postgres", "ssh": None, "android": None}
 
 
 def _parser(protocol: str) -> argparse.ArgumentParser:

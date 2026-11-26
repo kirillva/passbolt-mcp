@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1
+
+- Fix the android sink protocol wiring: `DEFAULT_DATABASES` had no `android` entry, so every
+  `android_fill` delivery died with `KeyError: 'android'` before touching the device.
+
 ## 0.10.0
 
 - New `android_fill` sink: signs in to an Android app through uiautomator2. Records use
