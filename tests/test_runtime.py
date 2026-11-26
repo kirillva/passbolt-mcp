@@ -84,6 +84,7 @@ class FixtureAdapter:
         # The write gate keeps its old meaning for the existing refusal test; the
         # "any" policy is what the fork ships by default now.
         self.domain_policy = "allowlist"
+        self.update_error = None
 
     def access_policy(self, label):
         return PassboltAccessPolicy(
@@ -142,6 +143,8 @@ class FixtureAdapter:
 
     async def update_resource(self, **kwargs):
         self.calls.append(("update", kwargs))
+        if self.update_error is not None:
+            raise self.update_error
         return {"resource_id": RESOURCE, "updated": True}
 
     async def share_resource(self, **kwargs):
@@ -382,6 +385,27 @@ async def test_auto_approval_applies_the_write_and_logs_the_change(config):
     assert entry["changes"]["fields"]["description"] == {"chars": 15}
     assert entry["result"]["updated"] is True
     assert "top secret note" not in raw and "secret_source" not in entry["changes"]
+
+
+async def test_a_local_validation_error_does_not_block_the_next_attempt(config):
+    """A definitive local failure settles the write instead of leaving a pending digest."""
+    adapter = FixtureAdapter()
+    adapter.domain_policy = "any"
+    adapter.update_error = ValueError("Passbolt update fields are empty or unsupported")
+    _, call = harness(replace(config, passbolt_write_approval="auto"), adapter)
+    args = dict(
+        resource_id=RESOURCE,
+        fields={"uri": "postgresql://db.example/app"},
+        expected_modified="v1",
+        idempotency_key="u-bad",
+    )
+    with pytest.raises(SafeToolError) as error:
+        await call("passbolt_update_resource", **args)
+    assert error.value.error_code == "validation_failed"
+
+    adapter.update_error = None
+    retried = await call("passbolt_update_resource", **{**args, "idempotency_key": "u-retry"})
+    assert retried["updated"] is True
 
 
 def test_write_approval_defaults_to_operator_and_is_validated(config):

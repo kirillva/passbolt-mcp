@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.5
+
+- A local validation error during a write (an unsupported field, a rejected URI) settled the
+  attempt as `pending`, and the same request digest then blocked every later attempt with
+  "pending reconciliation" even though nothing had been sent. Such errors now settle the write as
+  `failed`, so a corrected retry with a new idempotency key works immediately.
+
 ## 0.8.4
 
 - Updating a record's URI used its own HTTPS-only validator, so a `postgresql://` or `ssh://`

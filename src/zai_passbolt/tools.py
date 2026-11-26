@@ -410,6 +410,21 @@ def register_tools(server: Any, runtime: Any) -> None:
                         result={"error": "precondition_failed"},
                     )
                 raise
+            except ValueError:
+                # Local validation (an unsupported field, a bad uri) fails before any mutating
+                # request. Settle it as definitive: leaving it pending would block every later
+                # attempt with the same request digest as "pending reconciliation".
+                if checkpoint_state is not None:
+                    await release_checkpoint()
+                else:
+                    await store.provider_write_settle(
+                        access.principal_id,
+                        "passbolt",
+                        key,
+                        status="failed",
+                        result={"error": "validation_failed"},
+                    )
+                raise
             except ProviderHttpError as exc:
                 if checkpoint_state is not None:
                     await release_checkpoint()
