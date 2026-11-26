@@ -75,12 +75,13 @@ STATE_JS = r"""(() => {
   const mfa = otp.length > 0 || /(two-factor|2fa|verification code|authenticator|код подтверждения)/i.test(text);
   const alert = [...document.querySelectorAll('[role="alert"], .error, .alert-danger, [data-error]')]
     .filter(vis).map(el => (el.innerText || '').trim()).filter(Boolean)[0] || '';
-  const dialog = [...document.querySelectorAll(
+  const dialogNodes = [...document.querySelectorAll(
     '[role="alertdialog"], [role="dialog"], .x-message-box, .x-window, .x-form-invalid-under,'
-    + ' .x-form-invalid-tip, .ant-message, .ant-modal-body, .modal.show, .toast, .notification')]
-    .filter(vis).map(el => (el.innerText || '').trim()).filter(t => t && t.length <= 300)[0] || '';
+    + ' .x-form-invalid-tip, .x-tip, .ant-message, .ant-modal-body, .modal.show, .toast, .notification')]
+    .filter(vis).map(el => (el.innerText || '').trim()).filter(t => t && t.length <= 300);
+  const dialogs = dialogNodes.slice(0, 8);
   return JSON.stringify({ pwLeft, url: location.href, mfa, alert: alert.slice(0, 300),
-    dialog: dialog.slice(0, 300) });
+    dialog: (dialogs[0] || '').slice(0, 300), dialogs: dialogs.map(t => t.slice(0, 300)) });
 })()"""
 
 # A page that keeps the login form on screen after a submit is not logged in; a
@@ -101,9 +102,16 @@ def failure_text(state: dict[str, Any]) -> str:
     alert = str(state.get("alert") or "").strip()
     if alert:
         return alert[:300]
-    dialog = str(state.get("dialog") or "").strip()
-    if dialog and _AUTH_FAILURE_RE.search(dialog):
-        return dialog[:300]
+    listed = state.get("dialogs")
+    texts = [str(item) for item in listed] if isinstance(listed, list) else []
+    if not texts and state.get("dialog"):
+        texts = [str(state.get("dialog"))]
+    # The login window is a dialog too and usually comes first in the DOM, so scan every
+    # candidate and take the one that reads like a refusal rather than the earliest one.
+    for text in texts:
+        stripped = " ".join(text.split())
+        if stripped and _AUTH_FAILURE_RE.search(stripped):
+            return stripped[:300]
     return ""
 
 

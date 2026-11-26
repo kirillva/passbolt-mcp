@@ -454,6 +454,21 @@ def test_login_outcome_refuses_to_call_a_still_visible_form_a_success() -> None:
     assert web_exec.login_outcome({"pwLeft": 1, "url": "u", "dialog": "Сессия продлена"}, "u")[0] == (
         "unconfirmed"
     )
+    # On the real stand the login window is listed before its message box, so reading the
+    # first dialog only would miss the refusal entirely.
+    ordered = web_exec.login_outcome(
+        {
+            "pwLeft": 1,
+            "url": "http://demo/#home",
+            "dialog": "Авторизация Логин: Пароль: Войти",
+            "dialogs": [
+                "Авторизация\nЛогин:\t\nПароль:\t\nВойти",
+                "Ошибка авторизации\nНеверный логин или пароль\nOK",
+            ],
+        },
+        "http://demo/#home",
+    )
+    assert ordered[0] == "rejected" and "Неверный логин или пароль" in ordered[1]
     # An explicit alert counts even without auth wording; a challenge outranks both.
     assert web_exec.login_outcome({"pwLeft": 1, "url": "u", "alert": "server said no"}, "u")[0] == (
         "rejected"
