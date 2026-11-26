@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from zai_passbolt import update_check
+from zai_passbolt import __version__, tool_log, update_check
 from zai_passbolt.adapter import (
     PassboltAccessPolicy,
     PassboltAdapter,
@@ -150,7 +151,7 @@ def register_tools(server: Any, runtime: Any) -> None:
             raise ValueError("Passbolt idempotency_key is required and must be at most 128 characters")
         return key
 
-    async def _passbolt_prepare_approval(operation: str, digest: str) -> str:
+    async def _passbolt_prepare_approval(operation: str, digest: str, *, auto: bool = False) -> str:
         access = current_access()
         approval_id = uuid4()
         await store.create_approval(
@@ -166,6 +167,18 @@ def register_tools(server: Any, runtime: Any) -> None:
                 budget_unlimited=True,
             )
         )
+        # Standing approval: the operator pre-authorised writes in the service
+        # environment, so the same digest-bound record is accepted here instead of
+        # waiting for passbolt-approval. It is still single-use and audited.
+        if auto and not store.transition_approval(
+            approval_id,
+            status="accepted",
+            actor=access.principal_id,
+            digest=digest,
+            acceptance_type="standing",
+            acceptance_origin="operator_config:PASSBOLT_WRITE_APPROVAL=auto",
+        ):
+            raise ProviderError("Passbolt standing approval could not be recorded")
         return str(approval_id)
 
     async def _passbolt_matching_approval(operation: str, digest: str, approval_id: str) -> UUID:
@@ -296,12 +309,15 @@ def register_tools(server: Any, runtime: Any) -> None:
         result_validator: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         access = current_access()
+        started = time.monotonic()
         key = _passbolt_idempotency_key(idempotency_key)
         digest = request_hash({"provider": "passbolt", "operation": operation, "arguments": arguments})
 
         async def execute(
             checkpoint: dict[str, str] | None = None,
             expected_checkpoint: dict[str, Any] | None = None,
+            *,
+            approval_mode: str = "operator",
         ) -> dict[str, Any]:
             checkpoint_state: dict[str, Any] | None = None
             resumed = checkpoint is not None
@@ -436,6 +452,19 @@ def register_tools(server: Any, runtime: Any) -> None:
                 await store.provider_write_settle(
                     access.principal_id, "passbolt", key, status="applied", result=stored_result
                 )
+            tool_log.record_change(
+                state_path=settings.state_path,
+                version=__version__,
+                tool=operation,
+                operation=operation,
+                outcome="applied",
+                approval=approval_mode,
+                actor=str(access.principal_id),
+                execution_id=current_request_id(),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                arguments=arguments,
+                result=stored_result,
+            )
             return {**stored_result, "idempotent": resumed}
 
         async def resume_pending(record: dict[str, Any]) -> dict[str, Any]:
@@ -454,7 +483,7 @@ def register_tools(server: Any, runtime: Any) -> None:
                     raise ProviderError("Passbolt write is pending reconciliation")
             if not isinstance(raw_checkpoint, dict):
                 raise ProviderError("Passbolt write is pending reconciliation")
-            return await execute(checkpoint, raw_checkpoint)
+            return await execute(checkpoint, raw_checkpoint, approval_mode="resume")
 
         existing = await store.provider_write_lookup(access.principal_id, "passbolt", key)
         if existing is not None:
@@ -468,13 +497,18 @@ def register_tools(server: Any, runtime: Any) -> None:
                 )
             return await resume_pending(existing)
         approval: UUID | None = None
+        approval_mode = "operator"
         if approval_required:
             if not approval_id:
-                return {
-                    "confirmation_required": True,
-                    "approval_id": await _passbolt_prepare_approval(operation, digest),
-                    "idempotent": False,
-                }
+                if settings.passbolt_write_approval == "auto":
+                    approval_id = await _passbolt_prepare_approval(operation, digest, auto=True)
+                    approval_mode = "auto"
+                else:
+                    return {
+                        "confirmation_required": True,
+                        "approval_id": await _passbolt_prepare_approval(operation, digest),
+                        "idempotent": False,
+                    }
             approval = await _passbolt_matching_approval(operation, digest, approval_id)
         is_new, raced = await store.provider_write_reserve(
             access.principal_id,
@@ -499,7 +533,11 @@ def register_tools(server: Any, runtime: Any) -> None:
                 result={"error": "approval_state"},
             )
             raise PermissionError("Passbolt approval was already consumed")
-        return await execute()
+        result = await execute(approval_mode=approval_mode)
+        if approval_mode == "auto":
+            # Tell the caller the write went through under the operator's standing policy.
+            result["approval"] = "auto"
+        return result
 
     @server.tool(auth=require_scopes("passbolt:read"), annotations=VAULT_READ_ONLY)
     async def passbolt_status() -> dict[str, Any]:

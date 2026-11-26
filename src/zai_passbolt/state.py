@@ -208,7 +208,16 @@ class StateStore:
             ).fetchone()
             return restore(ApprovalRecord, row[0]) if row else None
 
-    def transition_approval(self, identifier, *, status, actor=None, digest=None):
+    def transition_approval(
+        self,
+        identifier,
+        *,
+        status,
+        actor=None,
+        digest=None,
+        acceptance_type="manual",
+        acceptance_origin="admin",
+    ):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -221,7 +230,7 @@ class StateStore:
             if status == "accepted":
                 if str(record.principal_id) != str(actor) or record.request_hash != digest:
                     raise PermissionError("approval actor and exact digest required")
-                record.acceptance_type, record.acceptance_origin = "manual", "admin"
+                record.acceptance_type, record.acceptance_origin = acceptance_type, acceptance_origin
             record.status = status
             db.execute(
                 "UPDATE approvals SET data=? WHERE account=? AND id=?",

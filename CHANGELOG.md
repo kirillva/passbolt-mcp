@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.3
+
+- Every applied write now leaves a local record in `state/data-changes.jsonl` (0600, rotated):
+  operation, approval mode, actor, ids, the requested fields (URIs and names as-is, the note as a
+  length only, `secret_source` as its kind) and the result.
+  `scripts/tool_log_report.py --changes` prints the summary.
+- `PASSBOLT_WRITE_APPROVAL=auto` lets the operator pre-authorise writes: the server records the same
+  digest-bound approval as a standing one (`acceptance_type=standing`,
+  `acceptance_origin=operator_config`), consumes it once and applies the write in a single call,
+  audited and logged as `approval: "auto"`. The default stays `operator`, and no tool argument can
+  switch the mode.
+
 ## 0.8.2
 
 - `custom://<label>` records keep their connection fields in the note: `scheme`, `host`, `port`,

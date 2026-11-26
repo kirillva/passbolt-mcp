@@ -138,6 +138,22 @@ def _rotate(path: Path) -> None:
             continue
 
 
+def _append(path: Path, entry: dict[str, Any]) -> None:
+    """Append one bounded line; drop bulky sections rather than truncate the JSON."""
+    line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+    if len(line.encode("utf-8")) > MAX_LINE_BYTES:
+        for key in ("arguments", "changes"):
+            entry.pop(key, None)
+        line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _rotate(path)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(descriptor, (line + "\n").encode("utf-8"))
+    finally:
+        os.close(descriptor)
+
+
 def record_error(
     *,
     state_path: Path,
@@ -156,32 +172,119 @@ def record_error(
     if not enabled():
         return
     try:
-        entry: dict[str, Any] = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "version": version,
-            "tool": _safe_text(tool, 64),
-            "outcome": _safe_text(outcome, 24),
-            "code": _safe_text(code, 64),
-            "error": _safe_text(error, 64),
-            "hint": _safe_text(hint, 400),
-            "actor": _safe_text(actor, 128),
-            "execution_id": _safe_text(execution_id, 64),
-            "duration_ms": int(duration_ms),
-            "arguments": summarize_arguments(arguments),
+        _append(
+            log_path(state_path),
+            {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "version": version,
+                "tool": _safe_text(tool, 64),
+                "outcome": _safe_text(outcome, 24),
+                "code": _safe_text(code, 64),
+                "error": _safe_text(error, 64),
+                "hint": _safe_text(hint, 400),
+                "actor": _safe_text(actor, 128),
+                "execution_id": _safe_text(execution_id, 64),
+                "duration_ms": int(duration_ms),
+                "arguments": summarize_arguments(arguments),
+            },
+        )
+    except (OSError, ValueError, TypeError):
+        return
+
+
+CHANGES_NAME = "data-changes.jsonl"
+# Values worth reading in a change log; secrets are reduced to their shape instead.
+SAFE_CHANGE_TEXT = frozenset(
+    {"name", "uri", "username", "permission", "share_mode", "folder", "parent", "resource_id", "folder_id"}
+)
+
+
+def changes_path(state_path: Path) -> Path:
+    """`<state dir>/data-changes.jsonl`, or an operator-chosen file inside their home."""
+    override = os.environ.get("PASSBOLT_CHANGE_LOG_PATH", "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_absolute() and ".." not in candidate.parts:
+            try:
+                candidate.relative_to(Path.home())
+            except ValueError:
+                return Path(state_path).parent / CHANGES_NAME
+            return candidate
+    return Path(state_path).parent / CHANGES_NAME
+
+
+def summarize_changes(arguments: dict[str, Any]) -> dict[str, Any]:
+    """What a write asked to change: text fields as-is, secrets as shape only."""
+    summary: dict[str, Any] = {}
+    for key in sorted(SAFE_CHANGE_TEXT):
+        value = arguments.get(key)
+        if isinstance(value, str) and value:
+            summary[key] = _safe_text(value, 200)
+    for key in ("share_with_users", "share_with_groups", "groups", "users"):
+        value = arguments.get(key)
+        if isinstance(value, list):
+            summary[key] = {"items": len(value)}
+    source = arguments.get("secret_source")
+    if isinstance(source, dict):
+        summary["secret_source"] = {"kind": _safe_text(source.get("kind"), 32)}
+    fields = arguments.get("fields")
+    if isinstance(fields, dict):
+        requested: dict[str, Any] = {}
+        for key, value in sorted(fields.items()):
+            if key in SAFE_CHANGE_TEXT and isinstance(value, str):
+                requested[key] = _safe_text(value, 200)
+            elif key in {"description", "note"}:
+                requested[key] = {"chars": len(value)} if isinstance(value, str) else None
+            elif key == "secret_source" and isinstance(value, dict):
+                requested[key] = {"kind": _safe_text(value.get("kind"), 32)}
+            else:
+                kind = "object" if isinstance(value, dict) else "list" if isinstance(value, list) else "value"
+                requested[key] = {"kind": kind}
+        summary["fields"] = requested
+    return summary
+
+
+def record_change(
+    *,
+    state_path: Path,
+    version: str,
+    tool: str,
+    operation: str,
+    outcome: str,
+    approval: str,
+    actor: str | None,
+    execution_id: str | None,
+    duration_ms: int,
+    arguments: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    """Append one applied change. Never the secret, never the note body."""
+    if not enabled():
+        return
+    try:
+        stored = result if isinstance(result, dict) else {}
+        summary = {
+            key: stored[key]
+            for key in ("resource_id", "folder_id", "created", "updated", "shared", "idempotent")
+            if key in stored and isinstance(stored[key], (str, bool, int))
         }
-        line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        if len(line.encode("utf-8")) > MAX_LINE_BYTES:
-            # Drop the bulk, never truncate the JSON: a line has to stay parseable.
-            entry["arguments"] = {}
-            entry["hint"] = _safe_text(entry["hint"], 200)
-            line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        path = log_path(state_path)
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _rotate(path)
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-        try:
-            os.write(descriptor, (line + "\n").encode("utf-8"))
-        finally:
-            os.close(descriptor)
+        _append(
+            changes_path(state_path),
+            {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "version": version,
+                "tool": _safe_text(tool, 64),
+                "operation": _safe_text(operation, 64),
+                "outcome": _safe_text(outcome, 24),
+                "approval": _safe_text(approval, 16),
+                "actor": _safe_text(actor, 128),
+                "execution_id": _safe_text(execution_id, 64),
+                "duration_ms": int(duration_ms),
+                "changes": summarize_changes(arguments),
+                "result": summary,
+                "error": _safe_text(error, 64),
+            },
+        )
     except (OSError, ValueError, TypeError):
         return

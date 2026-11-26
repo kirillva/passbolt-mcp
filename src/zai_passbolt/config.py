@@ -25,6 +25,10 @@ class ServiceConfig:
     audience: str = "passbolt-mcp"
     local_scopes: frozenset[str] = frozenset({"passbolt:read"})
     passbolt_write_enabled: bool = False
+    # "operator" (default): every write waits for passbolt-approval.
+    # "auto": the operator pre-authorised writes, so the server records a standing
+    # approval bound to the same digest and applies the write in one call.
+    passbolt_write_approval: str = "operator"
     passbolt_share_elicitation: str = "auto"
     passbolt_use_enabled: bool = False
     passbolt_selection_ttl_seconds: int = 600
@@ -68,6 +72,8 @@ class ServiceConfig:
         if self.passbolt_share_elicitation not in {"auto", "required", "off"}:
             # Fail at startup, not on the first approved share.
             raise ValueError("PASSBOLT_SHARE_ELICITATION must be auto, required or off")
+        if self.passbolt_write_approval not in {"operator", "auto"}:
+            raise ValueError("PASSBOLT_WRITE_APPROVAL must be operator or auto")
         copied = dict(self.bindings)
         if any(
             not isinstance(actor, str)
@@ -107,6 +113,7 @@ class ServiceConfig:
             audience=os.environ.get("PASSBOLT_MCP_AUDIENCE", "passbolt-mcp"),
             local_scopes=frozenset(os.environ.get("PASSBOLT_LOCAL_SCOPES", "passbolt:read").split()),
             passbolt_write_enabled=flag("PASSBOLT_WRITE_ENABLED"),
+            passbolt_write_approval=os.environ.get("PASSBOLT_WRITE_APPROVAL", "operator").strip().lower(),
             passbolt_share_elicitation=os.environ.get("PASSBOLT_SHARE_ELICITATION", "auto").strip().lower(),
             passbolt_use_enabled=flag("PASSBOLT_USE_ENABLED"),
             enabled=flag("PASSBOLT_ENABLED", "true"),

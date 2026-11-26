@@ -1,6 +1,6 @@
 """Summarize the local tool-error log for instruction work.
 
-Run: uv run python scripts/tool_log_report.py [--path FILE] [--top 5] [--samples 3]
+Run: uv run python scripts/tool_log_report.py [--changes] [--path FILE] [--top 5] [--samples 3]
 
 The log holds no secrets (see ``zai_passbolt.tool_log``), so the report can be
 pasted next to the guides. Group by tool, error code and hint, then show a few
@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from zai_passbolt.tool_log import DEFAULT_NAME, ROTATED_FILES, log_path  # noqa: E402
+from zai_passbolt.tool_log import DEFAULT_NAME, ROTATED_FILES, changes_path, log_path  # noqa: E402
 
 DEFAULT_STATE = "~/.config/passbolt-mcp/state/passbolt.sqlite"
 DOC_WORTHY = ("validation_failed", "provider_configuration_invalid", "provider_disabled")
@@ -55,6 +55,32 @@ def describe(entry: dict) -> str:
     if not isinstance(arguments, dict) or not arguments:
         return "-"
     return " ".join(f"{key}={value}" for key, value in sorted(arguments.items()))[:160]
+
+
+def report_changes(entries: list[dict], *, top: int, samples: int) -> list[str]:
+    if not entries:
+        return ["no data changes logged yet"]
+    lines: list[str] = [
+        f"data changes: {len(entries)}",
+        f"period: {entries[0].get('ts')} .. {entries[-1].get('ts')}",
+        "",
+        "## by operation",
+    ]
+    counts = Counter(
+        (str(entry.get("operation")), str(entry.get("approval"))) for entry in entries
+    )
+    for (operation, approval), count in counts.most_common(top):
+        lines.append(f"- {count:>4}  {operation}  approval={approval}")
+    lines += ["", "## latest changes"]
+    for entry in entries[-samples:]:
+        changes = entry.get("changes") if isinstance(entry.get("changes"), dict) else {}
+        fields = ",".join(sorted(changes.get("fields") or {})) or "-"
+        target = changes.get("resource_id") or changes.get("folder_id") or "-"
+        lines.append(
+            f"- {entry.get('ts')}  {entry.get('operation')}  {entry.get('outcome')}"
+            f"  approval={entry.get('approval')}  {target}  fields={fields}"
+        )
+    return lines
 
 
 def report(entries: list[dict], *, top: int, samples: int) -> list[str]:
@@ -103,12 +129,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", help="log file (default: next to the state database)")
     parser.add_argument("--top", type=int, default=5, help="groups per section (default 5)")
     parser.add_argument("--samples", type=int, default=3, help="sample rows (default 3)")
+    parser.add_argument("--changes", action="store_true", help="read the data-change log instead")
     args = parser.parse_args(argv)
-    path = Path(args.path).expanduser() if args.path else default_log_path()
+    if args.path:
+        path = Path(args.path).expanduser()
+    elif args.changes:
+        path = changes_path(Path(os.environ.get("PASSBOLT_STATE_PATH", DEFAULT_STATE)).expanduser())
+    else:
+        path = default_log_path()
     if path.name != DEFAULT_NAME and not path.exists():
         print(f"no log at {path}", file=sys.stderr)
         return 1
-    print("\n".join(report(read_entries(path), top=max(1, args.top), samples=max(1, args.samples))))
+    render = report_changes if args.changes else report
+    print("\n".join(render(read_entries(path), top=max(1, args.top), samples=max(1, args.samples))))
     return 0
 
 

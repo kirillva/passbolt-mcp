@@ -357,6 +357,39 @@ async def test_custom_record_resolves_its_target_from_the_note(config):
     assert (kwargs["target"]["host"], kwargs["target"]["port"]) == ("lab.example", 80)
 
 
+async def test_auto_approval_applies_the_write_and_logs_the_change(config):
+    """The operator's standing policy applies the write in one call; the change is logged."""
+    adapter = FixtureAdapter()
+    adapter.domain_policy = "any"
+    _, call = harness(replace(config, passbolt_write_approval="auto"), adapter)
+    result = await call(
+        "passbolt_update_resource",
+        resource_id=RESOURCE,
+        fields={"uri": "postgresql://db.example:5432/app", "description": "top secret note"},
+        expected_modified="v1",
+        idempotency_key="u-auto",
+    )
+    assert result["updated"] is True and result["approval"] == "auto"
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "update" and kwargs["fields"]["uri"].startswith("postgresql://")
+
+    log = config.state_path.parent / "data-changes.jsonl"
+    raw = log.read_text(encoding="utf-8")
+    [entry] = [json.loads(line) for line in raw.splitlines()]
+    assert entry["operation"] == "update_resource"
+    assert entry["approval"] == "auto" and entry["actor"] == "alice"
+    assert entry["changes"]["fields"]["uri"] == "postgresql://db.example:5432/app"
+    assert entry["changes"]["fields"]["description"] == {"chars": 15}
+    assert entry["result"]["updated"] is True
+    assert "top secret note" not in raw and "secret_source" not in entry["changes"]
+
+
+def test_write_approval_defaults_to_operator_and_is_validated(config):
+    assert config.passbolt_write_approval == "operator"
+    with pytest.raises(ValueError, match="PASSBOLT_WRITE_APPROVAL"):
+        replace(config, passbolt_write_approval="sometimes")
+
+
 async def test_a_failed_tool_call_lands_in_the_local_error_log(config, monkeypatch):
     """The operator reads this file to fix the instructions; it must be there and be safe."""
     monkeypatch.delenv("PASSBOLT_TOOL_LOG", raising=False)

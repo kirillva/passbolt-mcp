@@ -50,6 +50,37 @@ uv run python scripts/tool_log_report.py --top 8 --samples 5
 кандидаты в правку гайдов), и последние отказы. Секретов в нём нет по построению,
 поэтому его можно приложить к задаче или обсуждению.
 
+## Лог изменений данных
+
+Пишется рядом с базой: `state/data-changes.jsonl` (0600, ротация 2 МБ, два файла). Одна
+строка — одно **применённое** изменение:
+
+| Поле | Что это |
+|---|---|
+| `ts`, `version`, `tool`, `operation`, `outcome`, `approval`, `actor`, `execution_id`, `duration_ms` | как в логе ошибок; `approval` — `operator` (подтверждал человек) или `auto` (стоячая политика) |
+| `changes` | что просили изменить: `name`/`uri`/`username`/`permission`/`folder`/`resource_id` как есть, `fields.*` — по полям; `description` — только длина, `secret_source` — только `kind` |
+| `result` | `resource_id`/`folder_id`/`created`/`updated`/`shared`/`idempotent` |
+| `error` | класс ошибки, если изменение не применилось |
+
+Пароля, `secret_source.value`/`ref` и текста заметки в логе нет по построению.
+
+Собрать: `uv run python scripts/tool_log_report.py --changes`.
+
+## Авто-подтверждение изменений
+
+По умолчанию каждый write ждёт `passbolt-approval` (10 минут, одноразово, digest привязан к
+аргументам). Оператор может включить стоячее подтверждение:
+
+```
+PASSBOLT_WRITE_APPROVAL=auto
+```
+
+Тогда изменение применяется за один вызов: сервер создаёт тот же digest-привязанный
+`ApprovalRecord`, сразу принимает его как `acceptance_type=standing` c
+`acceptance_origin=operator_config`, одноразово потребляет и пишет в лог `approval: "auto"`.
+Модель этот режим включить не может — только окружение/конфиг оператора; `operator` остаётся
+дефолтом, поэтому на чужой инсталляции поведение не меняется.
+
 ## Как этим править инструкции
 
 1. `validation_failed` с одним и тем же `arguments` → в гайде не хватает примера
