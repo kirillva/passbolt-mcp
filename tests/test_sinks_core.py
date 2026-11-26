@@ -33,55 +33,82 @@ from passbolt_sinkkit.guards import ssh as ssh_guard  # noqa: E402
 from passbolt_sinkkit.guards import web as web_guard  # noqa: E402
 from passbolt_sinkkit.guards.sql import validate_pg_job, validate_readonly_sql  # noqa: E402
 
+PG_SCHEMES = frozenset({"postgresql", "postgres"})
+WEB_SCHEMES = frozenset({"https"})
+
+
+def pg_target(uri: str, **kwargs: Any) -> dict[str, Any]:
+    return _sink_target(
+        uri, default_port=5432, default_database="postgres", schemes=PG_SCHEMES, **kwargs
+    )
+
+
+def ssh_target(uri: str, **kwargs: Any) -> dict[str, Any]:
+    return _sink_target(
+        uri, default_port=22, default_database=None, schemes=frozenset({"ssh"}), **kwargs
+    )
+
 
 def test_sink_target_defaults_and_explicit_port() -> None:
-    assert _sink_target("https://db.example", default_port=5432, default_database="postgres") == {
-        "uri": "https://db.example",
-        "scheme": "https",
+    assert _sink_target(
+        "postgresql://db.example",
+        default_port=5432,
+        default_database="postgres",
+        schemes=PG_SCHEMES,
+    ) == {
+        "uri": "postgresql://db.example",
+        "scheme": "postgresql",
         "host": "db.example",
         "port": 5432,
         "path": "/",
         "database": "postgres",
     }
-    explicit = _sink_target("https://db.example:443/app", default_port=5432, default_database="postgres")
-    assert explicit["port"] == 443 and explicit["database"] == "app"
-    web = _sink_target("https://portal.example/login", default_port=443, default_database=None)
+    explicit = _sink_target(
+        "postgresql://db.example:6543/app",
+        default_port=5432,
+        default_database="postgres",
+        schemes=PG_SCHEMES,
+    )
+    assert explicit["port"] == 6543 and explicit["database"] == "app"
+    web = _sink_target(
+        "https://portal.example/login", default_port=443, default_database=None, schemes=WEB_SCHEMES
+    )
     assert web["port"] == 443 and web["path"] == "/login" and web["database"] is None
 
 
-def test_plain_http_record_needs_the_operator_opt_in() -> None:
-    """A lab site on plain HTTP is usable, but only when the operator said so."""
-    with pytest.raises(ProviderConfigurationError, match="plain HTTP"):
-        _sink_target("http://lab.example/app", default_port=443, default_database=None)
+def test_sink_schemes_and_bare_host_are_per_sink() -> None:
+    """postgres:// and ssh:// say the protocol; http(s) is only for the web sink."""
+    with pytest.raises(ProviderConfigurationError, match="schemes"):
+        pg_target("https://db.example:5432/app")
+    with pytest.raises(ProviderConfigurationError, match="no scheme"):
+        pg_target("db.example:5432/app")
 
-    target = _sink_target(
-        "http://lab.example/app",
-        default_port=443,
-        default_database=None,
-        allow_plain_http=True,
-    )
-    assert target["scheme"] == "http" and target["port"] == 80 and target["path"] == "/app"
-    pinned = _sink_target(
-        "http://lab.example:8080/app",
-        default_port=443,
-        default_database=None,
-        allow_plain_http=True,
-    )
-    assert pinned["port"] == 8080
+    bare = pg_target("db.example:6543/app", allow_bare_host=True)
+    assert (bare["host"], bare["port"], bare["database"]) == ("db.example", 6543, "app")
+    bare_default = pg_target("dev-ws-v-07:443", allow_bare_host=True)
+    assert bare_default["port"] == 443 and bare_default["database"] == "postgres"
+
+    ssh = ssh_target("ssh://bastion.example")
+    assert ssh["port"] == 22
+    with pytest.raises(ProviderConfigurationError, match="path"):
+        ssh_target("ssh://bastion.example/home")
+    with pytest.raises(ProviderConfigurationError, match="credentials"):
+        pg_target("user:pw@db.example:5432/app", allow_bare_host=True)
 
 
-def test_allows_plain_http_flag_wins_over_the_global_opt_in(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_uri_schemes_default_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PASSBOLT_ALLOW_INSECURE_HTTP", raising=False)
-    assert PassboltSinkDispatcher.allows_plain_http({}) is False
+    assert PassboltSinkDispatcher.uri_schemes({}) == frozenset({"https"})
     monkeypatch.setenv("PASSBOLT_ALLOW_INSECURE_HTTP", "1")
-    assert PassboltSinkDispatcher.allows_plain_http({}) is True
-    # One lab sink may opt in while another stays HTTPS-only.
-    assert PassboltSinkDispatcher.allows_plain_http({"allow_insecure_uri": False}) is False
-    assert PassboltSinkDispatcher.allows_plain_http({"allow_insecure_uri": True}) is True
+    assert PassboltSinkDispatcher.uri_schemes({}) == frozenset({"https", "http"})
+    assert PassboltSinkDispatcher.uri_schemes({"uri_schemes": ["postgresql", "postgres"]}) == PG_SCHEMES
+    for invalid in ([], ["ftp"], "https", [7]):
+        with pytest.raises(ProviderError):
+            PassboltSinkDispatcher.uri_schemes({"uri_schemes": invalid})
+    assert PassboltSinkDispatcher.allow_bare_host({}) is False
+    assert PassboltSinkDispatcher.allow_bare_host({"allow_bare_host": True}) is True
     with pytest.raises(ProviderError):
-        PassboltSinkDispatcher.allows_plain_http({"allow_insecure_uri": "yes"})
+        PassboltSinkDispatcher.allow_bare_host({"allow_bare_host": "yes"})
 
 
 def test_configuration_error_carries_an_actionable_hint() -> None:

@@ -14,7 +14,6 @@ from zai_passbolt.adapter import PassboltAccessPolicy, PassboltAdapter, validate
 from zai_passbolt.elicitation import confirm_share, share_summary
 from zai_passbolt.transport import (
     LocalPreDispatchDenied,
-    ProviderConfigurationError,
     ProviderError,
     ProviderHttpError,
     ProviderPreconditionFailed,
@@ -523,6 +522,7 @@ def register_tools(server: Any, runtime: Any) -> None:
         result["sinks"] = summary() if callable(summary) else []
         result["sink_refs"] = sorted(getattr(policy, "sink_refs", frozenset()))
         result["domain_hosts"] = sorted(getattr(policy, "domain_hosts", frozenset()))
+        result["domain_policy"] = getattr(policy, "domain_policy", "any")
         # Cache-only hint: the status probe never contacts GitHub.
         known = update_check.cached_status(update_cache_path(settings))
         if known and known["update_available"]:
@@ -1279,22 +1279,15 @@ def register_tools(server: Any, runtime: Any) -> None:
                 sink_ref=sink_ref,
             )
             raise
-        if target.get("scheme") == "http" and not policy.permits_host(str(target["host"])):
-            # Plain HTTP is the one case where the transport, not just the address,
-            # differs: the host then has to be one the operator allowlisted.
-            await _passbolt_audit(
-                "passbolt:use",
-                "use_secret",
-                "plain_http_denied",
-                resource_id=selection.resource_id,
-                sink_ref=sink_ref,
-                target_host=str(target["host"]),
-                target_port=int(target["port"]),
-            )
-            raise ProviderConfigurationError(
-                f"Passbolt plain-HTTP target {target['host']} is outside the operator's allowed "
-                "domains; store the record under an allowed domain or add it to the sink policy"
-            )
+        # The record URI is the only source of the target; the advisory list is recorded,
+        # never enforced: the operator's vault already holds just the addresses they meant.
+        notes = ["record_uri"]
+        if target.get("scheme") == "http":
+            notes.append("plain_http")
+        advisory = policy.domain_advisory(str(target["host"]))
+        if advisory:
+            notes.append(advisory)
+        domain_note = ",".join(notes)
         if adapter.sinks.requires_job(sink_ref) and not job_ref:
             await _passbolt_audit(
                 "passbolt:use",
@@ -1404,7 +1397,7 @@ def register_tools(server: Any, runtime: Any) -> None:
                 "use_secret",
                 "error",
                 resource_id=selection.resource_id,
-                domain_decision="record_uri",
+                domain_decision=domain_note,
                 sink_ref=sink_ref,
                 job_sha256=job_sha256,
                 target_host=target["host"],
@@ -1419,7 +1412,7 @@ def register_tools(server: Any, runtime: Any) -> None:
             "use_secret",
             "delivered",
             resource_id=selection.resource_id,
-            domain_decision="record_uri",
+            domain_decision=domain_note,
             sink_ref=sink_ref,
             job_sha256=job_sha256,
             target_host=target["host"],

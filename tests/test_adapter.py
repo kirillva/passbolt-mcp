@@ -236,25 +236,33 @@ def test_hint_matches_the_same_host_across_scheme_and_port() -> None:
     assert adapter.domain_decision("https://demo.it-serv.ru/x", "it-serv.ru").matches is False
 
 
-def test_host_boundary_allows_http_but_writes_stay_https_exact() -> None:
-    policy = PassboltAccessPolicy(
-        resource_ids=frozenset(),
-        folder_ids=frozenset(),
-        group_ids=frozenset(),
-        user_ids=frozenset(),
-        domain_hosts=frozenset({"example.com", "pinned.example:8443"}),
-        sink_refs=frozenset(),
-        allow_create_resource=False,
-        allow_create_folder=False,
-    )
+def test_domain_policy_defaults_to_advisory_and_can_be_a_hard_allowlist() -> None:
+    def policy(domain_policy: str) -> PassboltAccessPolicy:
+        return PassboltAccessPolicy(
+            resource_ids=frozenset(),
+            folder_ids=frozenset(),
+            group_ids=frozenset(),
+            user_ids=frozenset(),
+            domain_hosts=frozenset({"example.com"}),
+            sink_refs=frozenset(),
+            allow_create_resource=True,
+            allow_create_folder=False,
+            domain_policy=domain_policy,
+        )
 
-    assert policy.permits_host("http://example.com/login") is True
-    assert policy.permits_host("https://example.com:8443/login") is True
-    assert policy.permits_domain("http://example.com/login") is False
-    assert policy.permits_domain("https://example.com:8443/login") is False
-    assert policy.permits_host("https://pinned.example:8443/x") is True
-    assert policy.permits_host("https://pinned.example/x") is False
-    assert policy.permits_host("https://sub.example.com/x") is False
+    advisory = policy("any")
+    assert advisory.domain_policy == "any"
+    assert advisory.permits_domain("https://new.example/login") is True
+    assert advisory.domain_advisory("https://new.example/login") == "unlisted_host"
+    assert advisory.domain_advisory("https://example.com/login") is None
+    assert advisory.domain_advisory("http://example.com/login") is None
+
+    strict = policy("allowlist")
+    assert strict.permits_domain("https://example.com/login") is True
+    assert strict.permits_domain("http://example.com/login") is False
+    assert strict.permits_domain("https://example.com:8443/login") is False
+    assert strict.permits_domain("https://new.example/login") is False
+    assert strict.domain_advisory("https://new.example/login") is None
 
 
 
@@ -276,18 +284,66 @@ def test_existing_v5_metadata_read_mode_omits_unsafe_uri_and_custom_fields() -> 
     assert "secret" not in repr(result)
 
 
-def test_v5_metadata_write_mode_stays_strict_https_and_custom_field_free() -> None:
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://legacy.example/login",
+        "https://portal.example/login",
+        "postgresql://db.example:5432/app",
+        "postgres://db.example/app",
+        "ssh://bastion.example",
+    ],
+)
+def test_v5_metadata_write_accepts_every_standard_scheme(uri: str) -> None:
     payload = {
         "object_type": "PASSBOLT_RESOURCE_METADATA",
         "resource_type_id": "dd1f723d-0d1e-513f-8218-4055dc0530d0",
         "name": "New resource",
         "username": "operator",
-        "uris": ["http://legacy.example/login"],
+        "uris": [uri],
         "description": None,
         "custom_fields": [],
     }
 
-    with pytest.raises(ValueError, match="HTTPS"):
+    assert validate_v5_metadata(payload)["uris"] == [uri]
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "ftp://legacy.example/login",
+        "https://user:pass@example.com/login",
+        "https://example.com/login?token=1",
+        "db.example:5432/app",
+    ],
+)
+def test_v5_metadata_write_rejects_credentials_queries_and_unknown_forms(uri: str) -> None:
+    payload = {
+        "object_type": "PASSBOLT_RESOURCE_METADATA",
+        "resource_type_id": "dd1f723d-0d1e-513f-8218-4055dc0530d0",
+        "name": "New resource",
+        "username": "operator",
+        "uris": [uri],
+        "description": None,
+        "custom_fields": [],
+    }
+
+    with pytest.raises(ValueError):
+        validate_v5_metadata(payload)
+
+
+def test_v5_metadata_write_stays_custom_field_free() -> None:
+    payload = {
+        "object_type": "PASSBOLT_RESOURCE_METADATA",
+        "resource_type_id": "dd1f723d-0d1e-513f-8218-4055dc0530d0",
+        "name": "New resource",
+        "username": "operator",
+        "uris": ["https://example.com/login"],
+        "description": None,
+        "custom_fields": [{"id": "opaque", "value": "must-not-project"}],
+    }
+
+    with pytest.raises(ValueError, match="custom fields"):
         validate_v5_metadata(payload)
 
 

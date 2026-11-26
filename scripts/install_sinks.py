@@ -25,14 +25,22 @@ SOURCE = ROOT / "examples" / "sinks"
 
 
 def _defaults(
-    dest: Path, state: Path, sslmode: str | None, sslrootcert: str | None
+    dest: Path,
+    state: Path,
+    sslmode: str | None,
+    sslrootcert: str | None,
+    psql: str | None = None,
 ) -> dict[str, tuple[str, dict[str, Any]]]:
     results = dest / "results"
     pg_command = [str(dest / "pg_query.py"), "--result-dir", str(results)]
-    if sslmode:
-        pg_command += ["--sslmode", sslmode]
-    if sslrootcert:
-        pg_command += ["--sslrootcert", sslrootcert]
+    check_command = [str(dest / "pg_check.py"), "--result-dir", str(results)]
+    for command in (pg_command, check_command):
+        if sslmode:
+            command += ["--sslmode", sslmode]
+        if sslrootcert:
+            command += ["--sslrootcert", sslrootcert]
+        if psql:
+            command += ["--psql", psql]
     return {
         "login_fill": (
             "login_fill.py",
@@ -54,6 +62,8 @@ def _defaults(
                 "timeout_seconds": 60,
                 "default_port": 5432,
                 "default_database": "postgres",
+                "uri_schemes": ["postgresql", "postgres"],
+                "allow_bare_host": True,
                 "requires_job": True,
                 "require_approval": "never",
                 "job_dir": str(state / "jobs"),
@@ -63,12 +73,30 @@ def _defaults(
                 "command": pg_command,
             },
         ),
+        "pg_exec": (
+            "pg_check.py",
+            {
+                "kind": "secure_fill",
+                "timeout_seconds": 90,
+                "default_port": 5432,
+                "default_database": "postgres",
+                "uri_schemes": ["postgresql", "postgres"],
+                "allow_bare_host": True,
+                "requires_job": False,
+                "require_approval": "never",
+                **({"sslmode": sslmode} if sslmode else {}),
+                **({"sslrootcert": sslrootcert} if sslrootcert else {}),
+                "command": check_command,
+            },
+        ),
         "ssh_ops": (
             "ssh_ops.py",
             {
                 "kind": "secure_fill",
                 "timeout_seconds": 120,
                 "default_port": 22,
+                "uri_schemes": ["ssh"],
+                "allow_bare_host": True,
                 "requires_job": True,
                 "require_approval": "never",
                 "job_dir": str(state / "jobs"),
@@ -92,6 +120,8 @@ def _defaults(
                 "kind": "secure_fill",
                 "timeout_seconds": 120,
                 "default_port": 22,
+                "uri_schemes": ["ssh"],
+                "allow_bare_host": True,
                 "requires_job": True,
                 "require_approval": "always",
                 "job_dir": str(state / "jobs"),
@@ -114,7 +144,13 @@ def _defaults(
 
 
 def _python_map(values: list[str], fallback: Path) -> dict[str, Path]:
-    mapping = {"login_fill": fallback, "pg_ro": fallback, "ssh_ops": fallback, "ssh_adhoc": fallback}
+    mapping = {
+        "login_fill": fallback,
+        "pg_ro": fallback,
+        "pg_exec": fallback,
+        "ssh_ops": fallback,
+        "ssh_adhoc": fallback,
+    }
     for item in values:
         name, _, path = item.partition("=")
         if name not in mapping or not path:
@@ -202,8 +238,9 @@ def main() -> int:
         help="interpreter for login_fill, pg_ro, ssh_ops, ssh_adhoc",
     )
     parser.add_argument("--only", default="", help="comma-separated sink names")
-    parser.add_argument("--pg-sslmode", default=None, help="e.g. verify-full or require")
+    parser.add_argument("--pg-sslmode", default="require", help="libpq sslmode, e.g. require or verify-full")
     parser.add_argument("--pg-sslrootcert", default=None)
+    parser.add_argument("--psql", default=None, help="absolute path to psql (default: PATH lookup)")
     args = parser.parse_args()
 
     dest = Path(args.dest).resolve()
@@ -214,7 +251,7 @@ def main() -> int:
         directory.chmod(0o700)
     interpreters = _python_map(args.python, Path(sys.executable))
     only = {item.strip() for item in args.only.split(",") if item.strip()}
-    definitions = _defaults(dest, state, args.pg_sslmode, args.pg_sslrootcert)
+    definitions = _defaults(dest, state, args.pg_sslmode, args.pg_sslrootcert, args.psql)
     if only - set(definitions):
         raise SystemExit(f"unknown sink in --only: {', '.join(sorted(only - set(definitions)))}")
 

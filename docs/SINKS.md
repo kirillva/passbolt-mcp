@@ -13,7 +13,7 @@ URI записи Passbolt; агент не может её переопреде�
 |---|---|---|
 | envelope | `passbolt_sinkkit/envelope.py` | конверт, target из URI записи, лимиты |
 | guards | `guards/web.py`, `guards/sql.py`, `guards/ssh.py` | что разрешено: вкладка/шаги, read-only SQL, профили и каталоги |
-| executors | `executors/web.py`, `executors/pg.py`, `executors/ssh.py` | CDP, psycopg, paramiko — только исполнение |
+| executors | `executors/web.py`, `executors/pg.py`, `executors/psql.py`, `executors/ssh.py` | CDP, psql, paramiko — только исполнение |
 | cli/results | `passbolt_sinkkit/cli.py`, `results.py`, `errors.py` | композиция, единый JSON-результат и коды выхода |
 
 Точки входа (`login_fill.py`, `pg_query.py`, `ssh_ops.py`) — по 10 строк. Guards возвращают
@@ -39,25 +39,47 @@ passbolt_use_secret(selection_id, sink_ref, job_ref?)
 
 ## URI записи → параметры подключения
 
-URI остаётся ссылкой на сайт; sink трактует её как адрес для своего протокола.
-Схема (http/https) не граница доверия — граница это `domain_hosts` политики, —
-поэтому `http://` остаётся рабочим адресом, а не битой записью.
+Схема говорит, каким протоколом говорить с адресом; креды, query и fragment в URI
+запрещены всегда. Набор допустимых схем задаётся у синка (`uri_schemes`), поэтому одна
+запись не может «переехать» на чужой протокол.
 
-| sink | URI | порт по умолчанию | что берётся |
+| sink | схемы | порт по умолчанию | путь |
 |---|---|---|---|
-| `login_fill` | `https://host[:port]/path` | 443 | host, port, path |
-| `login_fill` | `http://host[:port]/path` | 80 | host, port, path |
-| `pg_ro` | `https://host[:port][/db]` | 5432 | host, port, database |
-| `ssh_ops` / `ssh_adhoc` | `https://host[:port]` | 22 | host, port |
+| `login_fill` | `https`, `http`* | 443 / 80 | префикс пути для `web-profiles` |
+| `https_probe` | `https` | 443 | проверяемый endpoint |
+| `pg_ro`, `pg_exec` | `postgresql`, `postgres` | 5432 | `/имя_базы`, иначе `default_database` |
+| `ssh_ops`, `ssh_adhoc` | `ssh` | 22 | пусто |
 
-Явный порт (`https://host:443`) используется как есть; без порта — `default_port`
-из конфига синка, кроме `http://`, у которого порт 80 всегда свой. `http://`
-разрешает оператор: `"allow_insecure_uri": true` у конкретного синка, либо
-`PASSBOLT_ALLOW_INSECURE_HTTP=1` для всех (изолированная доверенная сеть). Без
-опта-in MCP отвечает `provider_configuration_invalid` с подсказкой, что включить,
-а хост при этом обязан входить в `domain_hosts` (иначе `plain_http_denied` в
-аудите). Логин по-прежнему уходит только в тот хост, который записан в записи:
-`target_url` вызывающего на адрес не влияет.
+\* `http` попадает в `uri_schemes` web-синка только при `PASSBOLT_ALLOW_INSECURE_HTTP=1`
+или если оператор вписал его явно.
+
+Явный порт в URI важнее схемы. «Голый» адрес `host[:port][/db]` принимается, если у синка
+включён `"allow_bare_host": true` — так в vault уже лежат некоторые хосты, и тогда порт
+берётся из `default_port` синка (`dev-ws-v-07:443` → порт 443, база `postgres`). Схема вне
+списка синка → `provider_configuration_invalid` с подсказкой, какие схемы допустимы.
+
+```
+postgresql://db.example:5432/app     ssh://bastion
+dev-ws-v-07:443                      https://demo.it-serv.ru/armnext/demo_kavkaz
+```
+
+Логин по-прежнему уходит только туда, что записано в записи: `target_url` вызывающего на
+адрес не влияет.
+
+### pg_ro: строки и типы
+
+Запрос оборачивается в `SELECT row_to_json(...) … LIMIT max_rows+1`, поэтому значения
+сохраняют типы PostgreSQL (number/bool/null/string), а одна строка — один JSON-объект.
+`columns` берутся из первой строки, при нуле строк — дешёвый `LIMIT 0` ради заголовка.
+Ответ: `status, host, port, database, db_user, sql_sha256, columns, rows, row_count,
+truncated, psql_version, format: "json-rows"`; предел — `max_rows` или 1 МиБ вывода.
+
+Пароль не попадает ни в argv, ни в окружение: sink пишет временный `PGPASSFILE` (0600) в
+приватный каталог и удаляет его после вызова, а сервер работает в read-only сессии
+(`PGOPTIONS=…default_transaction_read_only=on`). `sslmode` берётся из конфига синка, по
+умолчанию `require` — шифрование без проверки сертификата; `verify-full` c
+`--pg-sslrootcert` включается явно. `pg_exec` (`pg_check.py`) — диагностика: фиксированные
+read-only запросы, отчёт в `results/pg_exec-last.json` (0600) и одна JSON-строка в stdout.
 
 ## Конфиг `sinks.json`
 
@@ -114,20 +136,21 @@ URI остаётся ссылкой на сайт; sink трактует её к
 }
 ```
 
-- `sslmode`/`sslrootcert` передаются в psycopg как есть. Для прокси на 443
-  используйте `verify-full` и CA; при невозможности — `require`.
+- `sslmode`/`sslrootcert` > `PGSSLMODE`/`PGSSLROOTCERT` для psql. По умолчанию
+  `require` — шифрование без проверки сертификата; `verify-full` + CA включается явно.
 - `require_approval`: `never` (по умолчанию) или `always` (рекомендуется для
   `ssh_adhoc`). Одобрение выдаётся вне MCP через `passbolt-approval`.
 - `requires_job` + `job_dir`: sink принимает только задание из приватного
   каталога (0700), файлы 0600, не symlink, размер ≤ `max_job_bytes`.
-- `allow_insecure_uri`: `true` разрешает этой записи-адресу быть `http://`
-  (браузер сам поднимает такой сайт на HTTPS, поэтому вкладка и порт записи могут
-  различаться только схемой). Без флага действует `PASSBOLT_ALLOW_INSECURE_HTTP=1`;
-  `false` запрещает http даже при глобальном opt-in.
-- `domain_hosts` в политике ограничивает создание/обновление URI (строго https
-  origin) и, дополнительно, использование секрета для `http://`-адресов: хост
-  обязан быть в списке, иначе `plain_http_denied`. Для https-адресов на
-  использование по-прежнему влияет только сам URI записи.
+- `uri_schemes`: какие схемы принимает этот синк (`https`, `http`, `postgresql`,
+  `postgres`, `ssh`). Без ключа — `https` (+`http` при `PASSBOLT_ALLOW_INSECURE_HTTP=1`).
+- `allow_bare_host`: `true` разрешает записи вида `host[:port][/db]` без схемы; порт
+  тогда берётся из `default_port`.
+- `domain_policy` в политике: `any` (по умолчанию) — vault сам является списком
+  разрешённых адресов, запись и обновление URI не ограничены; `allowlist` — старое
+  поведение со строгим HTTPS-origin. При `any` непустой `domain_hosts` остаётся
+  подсказкой: выдача на хост вне списка пишет в аудит `unlisted_host`, но не блокирует;
+  `http`-цель помечается `plain_http`.
 
 ## Веб-профили (данные, не код)
 

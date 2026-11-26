@@ -13,8 +13,8 @@ is taken from the Passbolt resource URI, so the agent cannot redirect a credenti
 ## Which sinks exist
 
 Do not guess a `sink_ref` and do not read the operator's `secrets/` directory: `passbolt_status`
-returns `sinks` (ref, kind, requires_job, approval mode), `sink_refs` (the ones your binding may use)
-and `domain_hosts` (the origins you may target).
+returns `sinks` (ref, kind, requires_job, approval mode, `uri_schemes`), `sink_refs` (the ones your
+binding may use), `domain_policy` and `domain_hosts` (advisory unless the policy is `allowlist`).
 
 `passbolt_use_secret` returns the sink outcome, not just a boolean:
 `{"delivered_to_sink": true, "status": "logged_in", "url": "...", "account": "..."}`.
@@ -24,19 +24,16 @@ A structured failure (`status: "no_target"`, `"rejected"`, `"unconfirmed"`, `"ac
 `unconfirmed` means the login form is still on screen and nothing confirmed the session — neither
 is a success, and a wrong password must not be retried blindly.
 
-## Scheme, port and plain HTTP
+## Scheme, port and protocol
 
-Ports come from the record URI: an explicit port wins, `http://` means 80, everything
-else uses the sink's `default_port`. A bare `http://` site stays a usable site, but plain
-HTTP is the operator's call — `allow_insecure_uri` on that sink, or
-`PASSBOLT_ALLOW_INSECURE_HTTP=1` — and the host must be in `domain_hosts`. Otherwise
-`passbolt_use_secret` answers `provider_configuration_invalid` with a `hint` naming the
-switch; relay it instead of retrying. A browser upgrades HTTP on its own, so an open tab
-may sit on 443 while the record says 80: that is the same site and the sink follows it.
-A `target_url` passed to search or select is only a hint — `https://host/path?x=1`,
-`http://host` and `host` name the same site. One trap: if a site calls its own API over plain
-HTTP, its tab must stay on HTTP too — a page the browser quietly upgraded makes that call
-cross-scheme, and the site answers it as a failed login.
+The record URI names the protocol: `https`/`http` for web, `postgresql` (or `postgres`) for
+databases, `ssh` for shells, and `host[:port][/db]` where the sink allows a bare host. An
+explicit port wins, otherwise the scheme's standard port (443/80/5432/22). A scheme the sink
+does not accept, or credentials/query in the URI, answers `provider_configuration_invalid`
+with a `hint` listing what is allowed — relay it instead of retrying. There is no separate
+domain allowlist to satisfy: the vault is the list. A browser upgrades HTTP on its own, so an
+open tab may sit on 443 while the record says 80 — same site, the sink follows it. One trap: a
+site that calls its own API over plain HTTP must keep its tab on HTTP too.
 
 ## Several accounts on one site (browser sinks)
 

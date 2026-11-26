@@ -178,31 +178,37 @@ class PassboltAccessPolicy:
     resource_scope: str = "explicit"
     folder_scope: str = "explicit"
     allow_share_all: bool = False
+    # "any" (default): the vault itself decides where a record may point. "allowlist":
+    # keep the older exact-HTTPS-origin gate on create/update.
+    domain_policy: str = "any"
 
     def permits_domain(self, value: str) -> bool:
-        """Write boundary: the exact HTTPS origin has to be allowlisted."""
+        """Whether a record URI may be written for this origin.
+
+        The default is "any": the vault already only contains addresses the operator
+        put there, and the delivery target is always derived from the record URI, so
+        an allowlist only got in the way of onboarding. `domain_hosts` stays as an
+        advisory set for auditing when this policy is "any".
+        """
+        if self.domain_policy == "any":
+            return True
         return (_strict_origin(value) or "") in self.domain_hosts
 
-    def permits_host(self, value: str) -> bool:
-        """Host boundary for reading and using a record the vault already holds.
+    def domain_advisory(self, value: str) -> str | None:
+        """`unlisted_host` when the host is outside the advisory list, else None."""
+        if self.domain_policy != "any" or not self.domain_hosts:
+            return None
+        host = _site_host(value)
+        if host is None:
+            return None
+        return None if self.permits_any_host(host) else "unlisted_host"
 
-        The scheme is not part of a host, and a browser upgrades HTTP by itself, so
-        an `http://` record on an allowlisted host is a transport detail rather than
-        a different destination. An entry that pins a port (`host:8443`) still has to
-        match that port. Writes keep the stricter :meth:`permits_domain`.
-        """
+    def permits_any_host(self, value: str) -> bool:
+        """Host-only membership check against the advisory list (scheme ignored)."""
         host = _site_host(value)
         if host is None:
             return False
-        authority = _site_authority(value)
-        for entry in self.domain_hosts:
-            entry_authority = _site_authority(entry)
-            if _site_host(entry_authority) != host:
-                continue
-            if _pins_port(entry_authority) and entry_authority != authority:
-                continue
-            return True
-        return False
+        return any(_site_host(entry) == host for entry in self.domain_hosts)
 
     def permits_resource(self, resource_id: str, created: frozenset[str]) -> bool:
         return self.resource_scope == "all" or resource_id in self.resource_ids | created
@@ -212,25 +218,31 @@ class PassboltAccessPolicy:
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+# Every scheme a record URI may name. The wire protocol is the operator's choice per
+# sink (`uri_schemes`), and a standard scheme also implies its standard port.
+_STANDARD_PORTS = {**_DEFAULT_PORTS, "postgresql": 5432, "postgres": 5432, "ssh": 22}
+_SITE_SCHEMES = frozenset(_STANDARD_PORTS)
 
 
-def _site_url(value: str, field: str) -> str:
-    """Validate an http(s) site URL; whether plain HTTP is allowed is the caller's call.
+def _site_url(
+    value: str, field: str, *, schemes: frozenset[str] = _SITE_SCHEMES
+) -> str:
+    """Validate a site URL; the caller decides which schemes this sink accepts.
 
     Credentials, unparseable hosts and invalid ports are always rejected: they can
     smuggle a secret or split the destination. A query or fragment is refused too — it
     can carry a page-bound token that must not travel to a sink. The scheme itself is
-    not the trust boundary (the operator's domain policy is), so `http://` parses and
-    the caller decides whether the operator allowed that transport.
+    not the trust boundary (the operator's domain policy is), so it parses here and
+    the per-sink `uri_schemes` decides whether this sink speaks it.
     """
     normalized = value.strip().rstrip("/")
     try:
         parsed = urlsplit(normalized)
         port = parsed.port
     except ValueError as exc:
-        raise ValueError(f"{field} must be an absolute http(s) URL") from exc
+        raise ValueError(f"{field} must be an absolute URL") from exc
     if (
-        parsed.scheme not in {"http", "https"}
+        parsed.scheme not in schemes
         or parsed.hostname is None
         or parsed.username is not None
         or parsed.password is not None
@@ -238,7 +250,9 @@ def _site_url(value: str, field: str) -> str:
         or parsed.fragment
         or (port is not None and not 1 <= port <= 65_535)
     ):
-        raise ValueError(f"{field} must be an absolute http(s) URL without credentials")
+        raise ValueError(
+            f"{field} must be an absolute URL without credentials, query or fragment"
+        )
     try:
         parsed.hostname.encode("idna")
     except UnicodeError as exc:
@@ -285,11 +299,6 @@ def _site_authority(value: str | None) -> str | None:
     if port is None or port == _DEFAULT_PORTS.get(parsed.scheme):
         return authority
     return f"{authority}:{port}"
-
-
-def _pins_port(authority: str | None) -> bool:
-    """True when a normalized authority names a port explicitly (IPv6-safe)."""
-    return bool(authority) and ":" in authority.rsplit("]", 1)[-1]
 
 
 def _base_url(value: str, field: str) -> str:
@@ -437,57 +446,81 @@ def _sink_target(
     *,
     default_port: int,
     default_database: str | None,
-    allow_plain_http: bool = False,
+    schemes: frozenset[str] = frozenset({"https"}),
+    allow_bare_host: bool = False,
 ) -> dict[str, Any]:
     """Derive the connection target from the URI stored in the Passbolt resource.
 
-    The URI is the only source of the target: callers cannot override host, port
-    or database. An explicit URI port wins; otherwise `http://` means port 80 and
-    every other scheme uses the sink's protocol default (443 web, 5432 postgres,
-    22 ssh). Plain HTTP is refused unless the operator allowed it, because that is
-    the one case where the transport, not the address, is what changes.
+    The URI is the only source of the target: callers cannot override host, port or
+    database. The scheme has to be one the sink declares (`uri_schemes`), and a
+    standard scheme also fixes its standard port (`postgresql://` 5432, `ssh://` 22,
+    `http(s)://` 80/443) unless the URI names a port. With `allow_bare_host` a record
+    may also be written as `host[:port][/db]`, which is what the vault already holds
+    for some hosts.
     """
     if not uri:
         raise ProviderConfigurationError(
             "Passbolt resource has no URI; the sink target cannot be derived"
         )
-    try:
-        normalized = _site_url(uri, "resource_uri")
-    except ValueError as exc:
+    raw = uri.strip()
+    has_scheme = "://" in raw
+    if not has_scheme and not allow_bare_host:
+        allowed = ", ".join(sorted(f"{name}://host" for name in schemes))
         raise ProviderConfigurationError(
-            "Passbolt resource URI is invalid; it must be an absolute http(s) address "
-            "without credentials, query or fragment"
-        ) from exc
-    parsed = urlsplit(normalized)
-    scheme = parsed.scheme
-    if scheme == "http" and not allow_plain_http:
-        raise ProviderConfigurationError(
-            "Passbolt resource URI uses plain HTTP; store the site as HTTPS, or let the operator "
-            'opt in with "allow_insecure_uri": true on the sink '
-            "(PASSBOLT_ALLOW_INSECURE_HTTP=1 applies the same opt-in to every sink)"
+            f"Passbolt resource URI has no scheme; store it as {allowed} "
+            "(or let the operator allow a bare host on this sink)"
         )
+    try:
+        normalized = _site_url(raw, "resource_uri", schemes=schemes) if has_scheme else raw
+    except ValueError as exc:
+        allowed = ", ".join(sorted(schemes))
+        raise ProviderConfigurationError(
+            f"Passbolt resource URI must use one of these schemes ({allowed}) and carry no "
+            "credentials, query or fragment"
+        ) from exc
+    parsed = urlsplit(normalized if has_scheme else f"//{normalized}")
+    scheme = parsed.scheme if has_scheme else ""
+    if parsed.username is not None or parsed.password is not None:
+        raise ProviderConfigurationError(
+            "Passbolt resource URI must not carry credentials; keep the password in the secret"
+        )
+    if parsed.query or parsed.fragment or any(ord(char) < 32 for char in raw):
+        raise ProviderConfigurationError(
+            "Passbolt resource URI must not carry a query, fragment or control characters"
+        )
+    if not has_scheme:
+        try:
+            (parsed.hostname or "").encode("idna")
+        except UnicodeError as exc:
+            raise ProviderConfigurationError("Passbolt resource URI hostname is invalid") from exc
     if parsed.hostname is None:
-        raise ProviderError("Passbolt resource URI has no host")
+        raise ProviderConfigurationError(
+            "Passbolt resource URI has no host; store it as host[:port][/database]"
+        )
     try:
         port = parsed.port
     except ValueError as exc:
-        raise ProviderError("Passbolt resource URI has an invalid port") from exc
+        raise ProviderConfigurationError("Passbolt resource URI has an invalid port") from exc
     if port is None:
-        # The sink's default_port already encodes its protocol (443 web, 5432
-        # postgres, 22 ssh); only a plain-HTTP site needs a default of its own.
-        port = _DEFAULT_PORTS["http"] if scheme == "http" else default_port
+        port = _STANDARD_PORTS.get(scheme, default_port)
     if not 1 <= port <= 65_535:
-        raise ProviderError("Passbolt resource URI has an invalid port")
+        raise ProviderConfigurationError("Passbolt resource URI has an invalid port")
     path = parsed.path or "/"
+    if scheme == "ssh" and path not in {"", "/"}:
+        raise ProviderConfigurationError(
+            "An ssh:// resource URI must not have a path; store ssh://host[:port]"
+        )
     database: str | None = None
     if default_database is not None:
         database = path.strip("/") or default_database
         if _DATABASE_NAME_RE.fullmatch(database) is None:
-            raise ProviderError("Passbolt resource URI has an invalid database name")
+            raise ProviderConfigurationError(
+                "Passbolt resource URI has an invalid database name"
+            )
     return {
         "uri": normalized,
         "scheme": scheme,
-        "host": parsed.hostname,
+        "host": parsed.hostname.rstrip(".").lower(),
         "port": port,
         "path": path,
         "database": database,
@@ -669,7 +702,7 @@ def validate_v5_metadata(payload: Mapping[str, Any], *, strict_write: bool = Tru
     if not isinstance(uris, list) or len(uris) > max_uris:
         raise ValueError(f"Passbolt v5 metadata uris must be a list with at most {max_uris} entries")
     if strict_write:
-        normalized_uris = [_https_url(item, "uri") for item in uris if isinstance(item, str) and item]
+        normalized_uris = [_site_url(item, "uri") for item in uris if isinstance(item, str) and item]
         if len(normalized_uris) != len(uris):
             raise ValueError("Passbolt v5 metadata contains an invalid uri")
     else:
@@ -895,12 +928,19 @@ class PassboltSinkDispatcher:
             return []
         result = []
         for ref, config in sorted(sinks.items()):
+            try:
+                schemes = sorted(self.uri_schemes(config))
+                bare = self.allow_bare_host(config)
+            except ProviderError:
+                schemes, bare = [], False
             result.append(
                 {
                     "sink_ref": ref,
                     "kind": config.get("kind"),
                     "requires_job": bool(config.get("requires_job")),
                     "require_approval": config.get("require_approval", "never"),
+                    "uri_schemes": schemes,
+                    "allow_bare_host": bare,
                 }
             )
         return result
@@ -938,22 +978,38 @@ class PassboltSinkDispatcher:
             resource_uri,
             default_port=self._default_port(config),
             default_database=database,
-            allow_plain_http=self.allows_plain_http(config),
+            schemes=self.uri_schemes(config),
+            allow_bare_host=self.allow_bare_host(config),
         )
 
     @staticmethod
-    def allows_plain_http(config: Mapping[str, Any]) -> bool:
-        """Whether a record URI may deliver this sink's secret over plain HTTP.
+    def uri_schemes(config: Mapping[str, Any]) -> frozenset[str]:
+        """Schemes this sink accepts in a record URI.
 
-        The per-sink `allow_insecure_uri` flag decides on its own, so one HTTPS-only
-        sink can stay that way while a trusted lab sink opts in. With no flag the
-        operator-wide PASSBOLT_ALLOW_INSECURE_HTTP=1 opt-in applies.
+        Explicit `uri_schemes` wins; otherwise a sink is HTTPS-only, unless the
+        operator-wide PASSBOLT_ALLOW_INSECURE_HTTP=1 opt-in also allows plain HTTP.
         """
-        value = config.get("allow_insecure_uri")
+        value = config.get("uri_schemes")
         if value is None:
-            return os.environ.get("PASSBOLT_ALLOW_INSECURE_HTTP", "").strip() == "1"
+            schemes = {"https"}
+            if os.environ.get("PASSBOLT_ALLOW_INSECURE_HTTP", "").strip() == "1":
+                schemes.add("http")
+            return frozenset(schemes)
+        if (
+            not isinstance(value, list)
+            or not value
+            or len(value) > 8
+            or any(not isinstance(item, str) or item not in _SITE_SCHEMES for item in value)
+        ):
+            raise ProviderError("Passbolt sink uri_schemes is invalid")
+        return frozenset(value)
+
+    @staticmethod
+    def allow_bare_host(config: Mapping[str, Any]) -> bool:
+        """Whether a record URI may name `host[:port][/db]` without a scheme."""
+        value = config.get("allow_bare_host", False)
         if not isinstance(value, bool):
-            raise ProviderError("Passbolt sink allow_insecure_uri must be a boolean")
+            raise ProviderError("Passbolt sink allow_bare_host must be a boolean")
         return value
 
     def _job_path(self, sink_ref: str, job_ref: str) -> Path:
@@ -1056,6 +1112,9 @@ class PassboltSinkDispatcher:
         resource_scope = raw.get("resource_scope", "explicit")
         folder_scope = raw.get("folder_scope", "explicit")
         allow_share_all = raw.get("allow_share_all", False)
+        domain_policy = raw.get("domain_policy", "any")
+        if domain_policy not in {"any", "allowlist"}:
+            raise ProviderError("Passbolt principal policy domain_policy is invalid")
         if (
             not isinstance(domains, list)
             or len(domains) > 200
@@ -1082,6 +1141,7 @@ class PassboltSinkDispatcher:
             group_ids=uuid_set("group_ids"),
             user_ids=uuid_set("user_ids"),
             domain_hosts=frozenset(domains),
+            domain_policy=domain_policy,
             sink_refs=frozenset(sinks),
             allow_create_resource=bool(raw["allow_create_resource"]),
             allow_create_folder=bool(raw["allow_create_folder"]),

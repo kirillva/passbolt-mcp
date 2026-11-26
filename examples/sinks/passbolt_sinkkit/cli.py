@@ -34,8 +34,9 @@ def _parser(protocol: str) -> argparse.ArgumentParser:
         parser.add_argument("--web-profiles")
         parser.add_argument("--cdp", default="http://127.0.0.1:9222")
     elif protocol == "pg":
-        parser.add_argument("--sslmode", default="prefer")
+        parser.add_argument("--sslmode", default="require")
         parser.add_argument("--sslrootcert")
+        parser.add_argument("--psql")
     elif protocol == "ssh":
         parser.add_argument("--profiles")
         parser.add_argument("--known-hosts", required=True)
@@ -99,6 +100,7 @@ def main(protocol: str | None = None, argv: list[str] | None = None) -> int:
                 job,
                 sslmode=args.sslmode,
                 sslrootcert=args.sslrootcert,
+                psql_binary=args.psql,
             )
             result.update(**payload)
             return 0

@@ -69,6 +69,9 @@ class FixtureAdapter:
         self.sinks = FixtureSinks()
         # A test can point the fixture record at another site, e.g. a plain-HTTP lab.
         self.record_uri = "https://example.com/login"
+        # The write gate keeps its old meaning for the existing refusal test; the
+        # "any" policy is what the fork ships by default now.
+        self.domain_policy = "allowlist"
 
     def access_policy(self, label):
         return PassboltAccessPolicy(
@@ -82,6 +85,7 @@ class FixtureAdapter:
             allow_create_folder=True,
             resource_scope="all",
             folder_scope="all",
+            domain_policy=self.domain_policy,
         )
 
     async def status(self):
@@ -299,18 +303,16 @@ async def test_record_uri_is_used_without_domain_approval(config):
     assert adapter.calls[0][1]["resource_uri"] == "https://example.com/login"
 
 
-async def test_plain_http_record_needs_an_allowlisted_host(config):
-    """Plain HTTP changes the transport, so the host must be one the operator allows."""
+async def test_plain_http_delivery_is_not_blocked_by_the_advisory_list(config):
+    """The vault is the allowlist; a plain-HTTP record on any host is delivered."""
     adapter = FixtureAdapter()
     adapter.record_uri = "http://lab.example/login"
     _, call = harness(config, adapter)
     chosen = await call("passbolt_select", target_url="http://lab.example/login")
-    with pytest.raises(SafeToolError) as error:
-        await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
-    assert error.value.error_code == "provider_configuration_invalid"
-    assert "lab.example" in str(error.value)
-    # The sink is never entered, so the secret never left custody.
-    assert adapter.calls == []
+    result = await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+    assert result == {"delivered_to_sink": True}
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "use" and kwargs["target"]["scheme"] == "http"
 
 
 async def test_plain_http_record_on_an_allowlisted_host_is_delivered(config):
@@ -329,19 +331,16 @@ async def test_a_failed_tool_call_lands_in_the_local_error_log(config, monkeypat
     """The operator reads this file to fix the instructions; it must be there and be safe."""
     monkeypatch.delenv("PASSBOLT_TOOL_LOG", raising=False)
     adapter = FixtureAdapter()
-    adapter.record_uri = "http://lab.example/login"
     _, call = harness(config, adapter)
-    chosen = await call("passbolt_select", target_url="http://lab.example/login")
     with pytest.raises(SafeToolError):
-        await call("passbolt_use_secret", selection_id=chosen["selection_id"], sink_ref="fill")
+        await call("passbolt_select", target_url="ftp://example.com/login")
 
     log = config.state_path.parent / "tool-errors.jsonl"
     entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert [entry["tool"] for entry in entries] == ["passbolt_use_secret"]
+    assert [entry["tool"] for entry in entries] == ["passbolt_select"]
     entry = entries[0]
-    assert entry["code"] == "provider_configuration_invalid"
-    assert "lab.example" in entry["hint"] and "plain-HTTP" in entry["hint"]
-    assert entry["arguments"] == {"selection_id": {"chars": 36}, "sink_ref": "fill"}
+    assert entry["code"] == "validation_failed"
+    assert entry["arguments"]["target_url"] == "<scheme>://example.com"
     assert entry["duration_ms"] >= 0 and entry["version"] and entry["execution_id"]
 
 
@@ -456,6 +455,25 @@ async def test_update_accepts_policy_uri_or_primary_uri_removal(config, uri):
     assert (await call("passbolt_update_resource", **args, approval_id=approval))["updated"]
     [(kind, kwargs)] = adapter.calls
     assert kind == "update" and kwargs["fields"]["uri"] == uri
+
+
+async def test_update_accepts_a_new_site_when_domain_policy_is_any(config):
+    """Default policy: the vault is the allowlist, so a new site needs no settings edit."""
+    adapter = FixtureAdapter()
+    adapter.domain_policy = "any"
+    runtime, call = harness(config, adapter)
+    args = dict(
+        resource_id=RESOURCE,
+        fields={"uri": "https://new.example/login", "secret_source": {"kind": "server_generated"}},
+        expected_modified="v1",
+        idempotency_key="u-any-site",
+    )
+    prepared = await call("passbolt_update_resource", **args)
+    assert prepared["confirmation_required"] and not adapter.calls
+    approval = await approve(runtime, prepared)
+    assert (await call("passbolt_update_resource", **args, approval_id=approval))["updated"]
+    [(kind, kwargs)] = adapter.calls
+    assert kind == "update" and kwargs["fields"]["uri"] == "https://new.example/login"
 
 
 async def test_share_elicitation_only_for_valid_matching_approval(config, monkeypatch):

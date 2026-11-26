@@ -159,6 +159,9 @@ def validate_readonly_sql(sql: str) -> None:
     if len(sql.encode("utf-8")) > MAX_SQL_BYTES:
         raise JobError("sql is too large")
     body = _strip_literals(sql).strip()
+    if "\\" in body:
+        # psql meta-commands (\!, \o, \copy) are shell and file access, not SQL.
+        raise JobError("psql meta-commands are not allowed")
     if body.endswith(";"):
         body = body[:-1].rstrip()
     if ";" in body:
@@ -175,6 +178,17 @@ def validate_readonly_sql(sql: str) -> None:
             raise JobError(f"forbidden keyword: {token}")
         if token in _DENY_FUNCTIONS:
             raise JobError(f"forbidden function: {token}")
+
+
+def wrap_readonly_query(sql: str, max_rows: int) -> str:
+    """Bound a validated statement and ask for one JSON object per row.
+
+    `row_to_json` keeps PostgreSQL types (numbers stay numbers, NULL stays null) and
+    escapes newlines, so every line is one complete row. `-c` has no fetch size, so the
+    outer LIMIT is the only row bound psql can apply.
+    """
+    body = sql.strip().rstrip(";").strip()
+    return f'SELECT row_to_json("_pb")::text FROM ({body}) AS "_pb" LIMIT {int(max_rows) + 1}'
 
 
 def validate_pg_job(job: object) -> dict:

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0
+
+- PostgreSQL sinks speak through **psql** instead of psycopg: the ~13 MB `.venv-pg` and the
+  Python driver dependency are gone. The password travels in a temporary `PGPASSFILE` (0600,
+  private directory, deleted after the call) and never in argv or the child environment;
+  `PGOPTIONS` keeps the session `default_transaction_read_only`; rows come back as one JSON
+  object per line (`row_to_json`), so PostgreSQL types survive, bounded by `max_rows` and 1 MiB.
+  `sslmode` defaults to `require` (encrypt, do not verify) and `psql_version` is reported.
+  `pg_exec` becomes the bundled `pg_check.py` diagnostic.
+- Record URIs name their protocol: `postgresql://`/`postgres://` for databases, `ssh://` for
+  shells, `http(s)://` for web, with each sink declaring `uri_schemes`. A scheme the sink does
+  not accept answers `provider_configuration_invalid` with the allowed list; `allow_bare_host`
+  keeps accepting `host[:port][/db]` where records are already written that way, and a standard
+  scheme picks its standard port.
+- The domain allowlist no longer blocks. `domain_policy` defaults to `any`: creating or updating
+  a record for a new site needs no settings edit, because the vault is the allowlist. The
+  plain-HTTP delivery gate went with it. An existing `domain_hosts` stays advisory
+  (`unlisted_host` in the audit) and `"domain_policy": "allowlist"` restores the old boundary.
+  Migration note: an installation that relied on the old default now has write scope for any
+  vault host it can already read — set `allowlist` if that was intentional.
+- `validate_v5_metadata` (write) accepts the standard schemes (`http`, `https`, `postgresql`,
+  `postgres`, `ssh`) and still refuses credentials, query, fragment or a bare host.
+
 ## 0.7.5
 
 - The tool-error log keeps the scheme of a `target_url` hint (`http://demo.example`) instead of
