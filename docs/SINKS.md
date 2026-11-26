@@ -105,6 +105,38 @@ database = app
 
 Метка после `custom://` — только для читаемости: адрес всегда берётся из заметки.
 
+### android_fill — вход в Android-приложение
+
+URI записи: `android://<package>[/<Activity>]` (например `android://ru.itserv.skr/SecurityActivity`).
+Порт не используется (в target попадает 5037 — порт adb). Sink подключается к устройству через
+uiautomator2 (`--device <serial>`, иначе `ANDROID_SERIAL`, иначе единственное подключённое) и
+работает только с приложением **на переднем плане**: если открыто другое — `no_target`,
+приложение нужно открыть заранее (агент это делает через playwright/uiautomator2 MCP).
+
+Профиль `android-profiles.json` (0600) описывает шаги:
+
+```json
+{"profiles": {"ru.itserv.skr": {
+  "match": {"package": "ru.itserv.skr"},
+  "steps": [
+    {"action": "fill",  "selector": {"resource_id": "ru.itserv.skr:id/security_login"}, "value_ref": "username"},
+    {"action": "fill",  "selector": {"resource_id": "ru.itserv.skr:id/security_pass"},  "value_ref": "password"},
+    {"action": "click", "selector": {"resource_id": "ru.itserv.skr:id/security_ok"}}
+  ],
+  "verify": {"absent": {"resource_id": "ru.itserv.skr:id/security_pass"}, "timeout_ms": 15000}
+}}}
+```
+
+Селектор — ровно один из `text`, `resource_id`, `class_name`, `description`, `xpath`
+(xpath только абсолютный). Действия: `fill`, `click`, `press` (enter/back/home/delete/search),
+`wait`. `verify`: `present` или `absent` + `timeout_ms`; без него успех — исчезло поле пароля.
+Без профиля работает эвристика: два EditText (пароль с `password=true`) и кнопка «Ок/Войти/Login».
+
+Статусы и коды те же, что у веб-синка: `logged_in`, `rejected` (текст отказа приложения в
+`detail`), `unconfirmed`, `mfa_required`, `timeout`, `no_target`, `form_error`. Пароль вводится
+через accessibility (`set_text`), а не `adb shell input text`, поэтому не попадает в командную
+строку процессов на хосте.
+
 ## Конфиг `sinks.json`
 
 ```json

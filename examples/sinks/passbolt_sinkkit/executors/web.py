@@ -22,7 +22,6 @@ from passbolt_sinkkit.errors import (
     FormError,
     InputError,
     MfaRequired,
-    RemoteFailure,
     SinkError,
     SinkTimeout,
     TargetError,

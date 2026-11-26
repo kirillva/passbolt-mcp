@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0
+
+- New `android_fill` sink: signs in to an Android app through uiautomator2. Records use
+  `android://<package>[/<Activity>]`; the app must be in the foreground (the sink refuses to steal
+  focus from another package), selectors come from `android-profiles.json` (text/resource-id/class/
+  description/absolute xpath, fill/click/press/wait, `verify` present|absent), and the generic
+  heuristic covers a two-field login form. Outcomes reuse the web sink vocabulary — `logged_in`,
+  `rejected` with the app's own wording, `unconfirmed`, `mfa_required`. The password is typed via
+  the accessibility `set_text` call, never `adb shell input text`, so it cannot leak through a
+  process list on the host.
+- `install_sinks.py --android-adb PATH` pins the adb binary for that sink; the sink also honours
+  `ANDROID_SERIAL` and falls back to the single connected device.
+
 ## 0.9.8
 
 - `passbolt_create_resource` can now create legacy **v4** records

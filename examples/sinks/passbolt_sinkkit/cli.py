@@ -14,16 +14,18 @@ from typing import Any
 
 from passbolt_sinkkit.envelope import credentials, page_marker, parse_target
 from passbolt_sinkkit.errors import SinkError
+from passbolt_sinkkit.executors import android as android_executor
 from passbolt_sinkkit.executors import pg as pg_executor
 from passbolt_sinkkit.executors import ssh as ssh_executor
 from passbolt_sinkkit.executors import web as web_executor
+from passbolt_sinkkit.guards import android as android_guard
 from passbolt_sinkkit.guards import ssh as ssh_guard
 from passbolt_sinkkit.guards import web as web_guard
 from passbolt_sinkkit.guards.sql import validate_pg_job
 from passbolt_sinkkit.results import Result
 
-PROTOCOLS = {"web": "login_fill", "pg": "pg_ro", "ssh": "ssh_ops"}
-DEFAULT_PORTS = {"web": 443, "pg": 5432, "ssh": 22}
+PROTOCOLS = {"web": "login_fill", "pg": "pg_ro", "ssh": "ssh_ops", "android": "android_fill"}
+DEFAULT_PORTS = {"web": 443, "pg": 5432, "ssh": 22, "android": 5037}
 DEFAULT_DATABASES = {"web": None, "pg": "postgres", "ssh": None}
 
 
@@ -33,6 +35,10 @@ def _parser(protocol: str) -> argparse.ArgumentParser:
     if protocol == "web":
         parser.add_argument("--web-profiles")
         parser.add_argument("--cdp", default="http://127.0.0.1:9222")
+    elif protocol == "android":
+        parser.add_argument("--profiles")
+        parser.add_argument("--device")
+        parser.add_argument("--adb")
     elif protocol == "pg":
         parser.add_argument("--sslmode", default="require")
         parser.add_argument("--sslrootcert")
@@ -88,6 +94,19 @@ def main(protocol: str | None = None, argv: list[str] | None = None) -> int:
                 cdp_url=args.cdp,
                 lock_path=workdir / lock_name,
                 page=marker,
+            )
+            result.update(**payload)
+            return 0
+        if protocol == "android":
+            document = android_guard.load_profiles(args.profiles)
+            plan = android_guard.build_plan(document, target)
+            payload = android_executor.run(
+                target,
+                username,
+                password,
+                plan,
+                device=args.device,
+                adb=args.adb,
             )
             result.update(**payload)
             return 0

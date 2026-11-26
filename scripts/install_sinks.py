@@ -30,6 +30,7 @@ def _defaults(
     sslmode: str | None,
     sslrootcert: str | None,
     psql: str | None = None,
+    android_adb: str | None = None,
 ) -> dict[str, tuple[str, dict[str, Any]]]:
     results = dest / "results"
     pg_command = [str(dest / "pg_query.py"), "--result-dir", str(results)]
@@ -87,6 +88,23 @@ def _defaults(
                 **({"sslmode": sslmode} if sslmode else {}),
                 **({"sslrootcert": sslrootcert} if sslrootcert else {}),
                 "command": check_command,
+            },
+        ),
+        "android_fill": (
+            "android_fill.py",
+            {
+                "kind": "secure_fill",
+                "timeout_seconds": 90,
+                "default_port": 5037,
+                "uri_schemes": ["android"],
+                "requires_job": False,
+                "require_approval": "never",
+                "command": [
+                    str(dest / "android_fill.py"),
+                    "--profiles",
+                    str(dest / "android-profiles.json"),
+                ]
+                + (["--adb", android_adb] if android_adb else []),
             },
         ),
         "ssh_ops": (
@@ -150,6 +168,7 @@ def _python_map(values: list[str], fallback: Path) -> dict[str, Path]:
         "pg_exec": fallback,
         "ssh_ops": fallback,
         "ssh_adhoc": fallback,
+        "android_fill": fallback,
     }
     for item in values:
         name, _, path = item.partition("=")
@@ -241,6 +260,7 @@ def main() -> int:
     parser.add_argument("--pg-sslmode", default="require", help="libpq sslmode, e.g. require or verify-full")
     parser.add_argument("--pg-sslrootcert", default=None)
     parser.add_argument("--psql", default=None, help="absolute path to psql (default: PATH lookup)")
+    parser.add_argument("--android-adb", default=None, help="absolute path to adb for the android sink")
     args = parser.parse_args()
 
     dest = Path(args.dest).resolve()
@@ -251,7 +271,9 @@ def main() -> int:
         directory.chmod(0o700)
     interpreters = _python_map(args.python, Path(sys.executable))
     only = {item.strip() for item in args.only.split(",") if item.strip()}
-    definitions = _defaults(dest, state, args.pg_sslmode, args.pg_sslrootcert, args.psql)
+    definitions = _defaults(
+        dest, state, args.pg_sslmode, args.pg_sslrootcert, args.psql, args.android_adb
+    )
     if only - set(definitions):
         raise SystemExit(f"unknown sink in --only: {', '.join(sorted(only - set(definitions)))}")
 

@@ -227,7 +227,7 @@ class PassboltAccessPolicy:
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 # Every scheme a record URI may name. The wire protocol is the operator's choice per
 # sink (`uri_schemes`), and a standard scheme also implies its standard port.
-_STANDARD_PORTS = {**_DEFAULT_PORTS, "postgresql": 5432, "postgres": 5432, "ssh": 22}
+_STANDARD_PORTS = {**_DEFAULT_PORTS, "postgresql": 5432, "postgres": 5432, "ssh": 22, "android": 5037}
 _SITE_SCHEMES = frozenset(_STANDARD_PORTS)
 
 

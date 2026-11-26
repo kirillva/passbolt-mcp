@@ -9,6 +9,7 @@ is taken from the Passbolt resource URI, so the agent cannot redirect a credenti
 | `secure_fill` | runs an operator-configured local command and passes the credential on stdin | browser login, ssh, pg |
 | `out_file` | writes a short-lived envelope file into a private spool directory | handing off to a local script that reads and deletes it |
 | `https_probe` | sends the secret to the configured HTTPS check and returns only pass/fail | verifying a credential still works |
+| `android_fill` | types into the app on the connected device over uiautomator2 | signing in to an Android app |
 
 ## Which sinks exist
 
@@ -34,6 +35,9 @@ with a `hint` listing what is allowed — relay it instead of retrying. There is
 domain allowlist to satisfy: the vault is the list. A browser upgrades HTTP on its own, so an
 open tab may sit on 443 while the record says 80 — same site, the sink follows it. One trap: a
 site that calls its own API over plain HTTP must keep its tab on HTTP too.
+
+An `android://<package>[/<Activity>]` record targets an app: the tab must already be open (the
+app in the foreground), and the same `logged_in`/`rejected`/`unconfirmed` statuses apply.
 
 A `custom://<label>` record names its address in the note instead (`scheme`, `host`, `port`,
 `database`, `path` as `key = value` lines): the server resolves and validates it, and the sink
