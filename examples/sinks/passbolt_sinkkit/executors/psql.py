@@ -46,8 +46,37 @@ def _executable(path: Path) -> Path:
     return resolved
 
 
+def _versioned_psql() -> Path | None:
+    """Newest `/usr/lib/postgresql/<ver>/bin/psql`, if the distribution ships one."""
+    root = Path("/usr/lib/postgresql")
+    if not root.is_dir():
+        return None
+    candidates = [path for path in root.glob("*/bin/psql") if path.is_file()]
+    if not candidates:
+        return None
+
+    def key(path: Path) -> tuple[int, ...]:
+        return tuple(int(part) if part.isdigit() else 0 for part in path.parent.parent.name.split("."))
+
+    return max(candidates, key=key)
+
+
+def _unwrap_wrapper(resolved: Path) -> Path:
+    """Debian's /usr/bin/psql is pg_wrapper, which needs a server cluster to pick a version.
+
+    On a client-only host it fails with "install at least one postgresql-client-<version>".
+    The versioned binary is right there, so use it and keep the operator's config portable.
+    """
+    if resolved.name != "pg_wrapper":
+        return resolved
+    versioned = _versioned_psql()
+    if versioned is None:
+        raise RemoteFailure("psql is the distribution wrapper and no versioned client is installed")
+    return _executable(versioned)
+
+
 def psql_path(value: str | None = None) -> str:
-    """Configured psql, else PATH lookup. Never returns a non-executable path."""
+    """Configured psql, else PATH lookup. Never returns a non-executable or wrapper path."""
     candidate = value or os.environ.get("PASSBOLT_PSQL") or shutil.which("psql")
     if not candidate:
         raise RemoteFailure("psql is not installed")
@@ -57,7 +86,7 @@ def psql_path(value: str | None = None) -> str:
         if not found:
             raise RemoteFailure("psql is not installed")
         path = Path(found)
-    return str(_executable(path))
+    return str(_unwrap_wrapper(_executable(path)))
 
 
 def _version(binary: str) -> str:
@@ -138,7 +167,7 @@ def _run(
     env: dict[str, str],
     *,
     timeout_seconds: float,
-) -> tuple[int, bytes, bool]:
+) -> tuple[int, bytes, bytes, bool]:
     """Run one psql statement, bounding both the wall clock and the output bytes."""
     argv = [
         binary,
@@ -186,12 +215,12 @@ def _run(
             if time.monotonic() > deadline:
                 process.kill()
                 raise SinkTimeout("psql statement exceeded its deadline")
-        process.stderr.read(MAX_STDERR_BYTES)  # drained, never logged or returned
+        stderr = process.stderr.read(MAX_STDERR_BYTES)  # classified, never logged
         code = process.wait(timeout=CLIENT_GRACE_SECONDS)
     except subprocess.TimeoutExpired as exc:
         process.kill()
         raise SinkTimeout("psql did not exit") from exc
-    return code, b"".join(chunks), capped
+    return code, b"".join(chunks), stderr, capped
 
 
 def _columns(binary: str, target: dict[str, Any], username: str, sql: str, env: dict[str, str]) -> list[str]:
@@ -253,7 +282,7 @@ def query(
             sslrootcert=sslrootcert,
             appname=appname,
         )
-        code, stdout, capped = _run(
+        code, stdout, stderr, capped = _run(
             binary, target, username, wrapped, env, timeout_seconds=timeout_seconds
         )
         if not capped:
@@ -262,6 +291,11 @@ def query(
             if code == 3:
                 raise RemoteFailure("query failed")
             if code != 0:
+                marker = stderr.decode("utf-8", "replace")
+                if "postgresql-client" in marker and "install" in marker:
+                    raise RemoteFailure(
+                        "psql is the distribution wrapper and no versioned client is installed"
+                    )
                 raise SinkError("psql invocation failed")
 
         text = stdout.decode("utf-8", "replace")

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1
+
+- The pg sinks unwrap Debian's `/usr/bin/psql` (pg_wrapper). On a client-only host that wrapper
+  refuses to start with "You must install at least one postgresql-client-<version> package" even
+  though the versioned binary is present; the newest `/usr/lib/postgresql/*/bin/psql` is used
+  instead. A wrapper that really has no client is reported as `remote_error` with that reason
+  instead of a bare "psql invocation failed".
+
 ## 0.8.0
 
 - PostgreSQL sinks speak through **psql** instead of psycopg: the ~13 MB `.venv-pg` and the

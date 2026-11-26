@@ -25,6 +25,7 @@ def fake_psql(
     rows: list[dict[str, Any]] | None = None,
     code: int = 0,
     huge: bool = False,
+    stderr: str = "",
 ) -> tuple[Path, Path]:
     """A psql stand-in that records its argv/env/passfile and prints canned rows."""
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -49,6 +50,7 @@ if path:
 with open(record, "a", encoding="utf-8") as handle:
     handle.write(json.dumps(entry) + "\\n")
 if {code!r}:
+    sys.stderr.write({stderr!r})
     sys.exit({code})
 if {huge!r}:
     sys.stdout.write('{{"blob":"' + "x" * (2 * 1024 * 1024) + '"}}\\n')
@@ -136,6 +138,14 @@ def test_query_maps_psql_exit_codes(tmp_path: Path) -> None:
     with pytest.raises(SinkError):
         run_query(broken)
 
+    wrapper, _ = fake_psql(
+        tmp_path / "wrapper",
+        code=1,
+        stderr="Error: You must install at least one postgresql-client-<version> package\n",
+    )
+    with pytest.raises(RemoteFailure, match="versioned client"):
+        run_query(wrapper)
+
 
 def test_query_bounds_rows_and_bytes(tmp_path: Path) -> None:
     binary, _ = fake_psql(tmp_path / "rows", rows=[{"n": 1}, {"n": 2}, {"n": 3}])
@@ -162,6 +172,29 @@ def test_psql_path_refuses_unsafe_binaries(tmp_path: Path) -> None:
 
     with pytest.raises(RemoteFailure):
         psql.psql_path(str(tmp_path / "missing"))
+
+
+def test_psql_path_unwraps_the_distribution_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version_dir = tmp_path / "postgresql" / "18" / "bin"
+    version_dir.mkdir(parents=True)
+    real = version_dir / "psql"
+    real.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    real.chmod(0o755)
+
+    wrapper = tmp_path / "pg_wrapper"
+    wrapper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    link = tmp_path / "psql"
+    link.symlink_to(wrapper)
+
+    monkeypatch.setattr(psql, "_versioned_psql", lambda: real)
+    assert psql.psql_path(str(link)) == str(real.resolve())
+
+    monkeypatch.setattr(psql, "_versioned_psql", lambda: None)
+    with pytest.raises(RemoteFailure, match="versioned client"):
+        psql.psql_path(str(link))
 
 
 def test_guard_refuses_psql_meta_commands_and_wraps_for_bounded_json() -> None:
