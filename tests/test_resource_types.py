@@ -8,6 +8,7 @@ import pytest
 
 from zai_passbolt.adapter import (
     RESOURCE_TYPE_SLUGS,
+    V4_PASSWORD_DESCRIPTION_RESOURCE_TYPE_ID,
     V5_DEFAULT_RESOURCE_TYPE_ID,
     V5_PIN_CODE_RESOURCE_TYPE_ID,
     PassboltAdapter,
@@ -365,7 +366,6 @@ async def test_pin_code_metadata_outside_its_schema_fails_closed() -> None:
         "7438294d-f71c-5164-ba95-d9e60e295564",  # v5-default-with-totp
         "0551544e-2ccd-5ce8-95cf-86f0aab0f827",  # v5-custom-fields
         "0a72c76b-b8e6-53f0-8bef-0a8ca6b5c764",  # v5-note
-        "a28a04cd-6f53-518a-967c-9963bf9cec51",  # v4 password-and-description
         "99999999-9999-4999-8999-999999999999",  # unknown future type
         "",
     ],
@@ -560,3 +560,91 @@ def test_pin_code_metadata_validator_checks_icon_schema() -> None:
     for bad in ({"type": "other"}, {"value": -1}, {"value": True}, {"background_color": "red"}, {"x": 1}):
         with pytest.raises(ValueError, match="icon is invalid"):
             validate_v5_pin_code_metadata(pin_metadata(icon=bad))
+
+
+V4_RESOURCE_ID = "66666666-6666-4666-8666-666666666666"
+V4_SECRET = {
+    "user_id": "77777777-7777-4777-8777-777777777777",
+    "data": "-----BEGIN PGP MESSAGE-----\nv4-ciphertext\n-----END PGP MESSAGE-----",
+}
+
+
+class V4UpdateAdapter(PassboltAdapter):
+    """A legacy v4 resource: plaintext metadata, per-user encrypted secrets."""
+
+    def __init__(self, **overrides: Any) -> None:
+        super().__init__("https://passbolt.example", "fixture-token", user_fingerprint="D" * 40)
+        self.resource = {
+            "id": V4_RESOURCE_ID,
+            "resource_type_id": V4_PASSWORD_DESCRIPTION_RESOURCE_TYPE_ID,
+            "name": "legacy",
+            "username": "postgres",
+            "uri": "dev-ws-v-07:443",
+            "description": "note",
+            "modified": MODIFIED,
+            "secrets": [dict(V4_SECRET)],
+            **overrides,
+        }
+        self.requests: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    async def _resource(self, resource_id: str) -> dict[str, Any]:
+        assert resource_id == V4_RESOURCE_ID
+        return dict(self.resource)
+
+    async def _request(
+        self, method: str, path: str, *, payload: dict[str, Any] | None = None, **_: Any
+    ) -> Any:
+        self.requests.append((method, path, payload))
+        return {"body": {"id": V4_RESOURCE_ID, "modified": "2026-10-02T00:00:00Z"}}
+
+
+async def test_v4_update_changes_metadata_and_resends_the_secret_verbatim() -> None:
+    adapter = V4UpdateAdapter()
+    result = await adapter.update_resource(
+        resource_id=V4_RESOURCE_ID,
+        fields={"uri": "postgresql://dev-ws-v-07:443/postgres"},
+        expected_modified=MODIFIED,
+    )
+    assert result["updated"] is True and result["resource_id"] == V4_RESOURCE_ID
+    [(method, path, payload)] = adapter.requests
+    assert method == "PUT" and path.endswith(f"/resources/{V4_RESOURCE_ID}.json")
+    assert payload["uri"] == "postgresql://dev-ws-v-07:443/postgres"
+    assert payload["name"] == "legacy" and payload["username"] == "postgres"
+    assert payload["description"] == "note"
+    # The ciphertext travels untouched: no decryption, no re-encryption, no loss.
+    assert payload["secrets"] == [V4_SECRET]
+
+
+async def test_v4_update_keeps_untouched_fields_and_can_clear_the_uri() -> None:
+    adapter = V4UpdateAdapter()
+    await adapter.update_resource(
+        resource_id=V4_RESOURCE_ID, fields={"name": "renamed"}, expected_modified=MODIFIED
+    )
+    payload = adapter.requests[0][2]
+    assert payload["name"] == "renamed" and payload["uri"] == "dev-ws-v-07:443"
+
+    await adapter.update_resource(
+        resource_id=V4_RESOURCE_ID, fields={"uri": None}, expected_modified=MODIFIED
+    )
+    assert adapter.requests[1][2]["uri"] is None
+
+
+async def test_v4_update_refuses_password_rotation_and_oversized_uris() -> None:
+    adapter = V4UpdateAdapter()
+    with pytest.raises(ValueError, match="v4 password rotation"):
+        await adapter.update_resource(
+            resource_id=V4_RESOURCE_ID,
+            fields={"secret_source": {"kind": "server_generated"}},
+            expected_modified=MODIFIED,
+        )
+    with pytest.raises(ValueError, match="255"):
+        await adapter.update_resource(
+            resource_id=V4_RESOURCE_ID,
+            fields={"uri": "https://example.com/" + "x" * 300},
+            expected_modified=MODIFIED,
+        )
+    with pytest.raises(PermissionError):
+        await adapter.update_resource(
+            resource_id=V4_RESOURCE_ID, fields={"name": "x"}, expected_modified="stale"
+        )
+    assert adapter.requests == []

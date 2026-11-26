@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0
+
+- `passbolt_update_resource` now updates legacy **v4** resources (`password and description`),
+  which is what a vault that was never migrated stores: `name`, `username`, `uri` and
+  `description` change, untouched fields are re-sent from the stored resource so a partial PUT
+  cannot blank them, and `uri` is capped at the v4 limit of 255 characters. Secrets are neither
+  decrypted nor re-encrypted — the ciphertext read from the vault is sent back verbatim, so a
+  metadata edit can never lose somebody's password. Password rotation on v4 is refused
+  (`secret_source`): that stays a vault UI action. This is what unblocks writing a proper scheme
+  into an old bare-host URI.
+
 ## 0.8.6
 
 - The local error log records `detail` for validation failures — the message this project authored

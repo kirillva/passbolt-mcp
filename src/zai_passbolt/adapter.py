@@ -42,6 +42,8 @@ MAX_CONNECTION_NOTE_BYTES = 8_192
 MAX_RESOURCE_SCAN = 2_000
 V5_DEFAULT_RESOURCE_TYPE_ID = "dd1f723d-0d1e-513f-8218-4055dc0530d0"
 V5_PIN_CODE_RESOURCE_TYPE_ID = "4357bbc7-ed4d-52ff-b59d-9f7f17881bb3"
+# Legacy v4 "password and description": plaintext metadata, secrets encrypted per user.
+V4_PASSWORD_DESCRIPTION_RESOURCE_TYPE_ID = "a28a04cd-6f53-518a-967c-9963bf9cec51"
 # Passbolt derives resource type ids as UUIDv5(PASSBOLT_SEED, "resource-types.id.<slug>")
 # (passbolt_api ResourceType entity). Only the slug label is projected to MCP callers.
 RESOURCE_TYPE_SLUGS = {
@@ -2617,6 +2619,67 @@ class PassboltAdapter:
             return note[: MAX_CONNECTION_NOTE_BYTES * 2]
         return None
 
+    async def _update_v4_resource(
+        self, resource: Mapping[str, Any], fields: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Update a legacy v4 resource's plaintext metadata; the secret is re-sent untouched.
+
+        The v4 API replaces the secret list when it is present, so the ciphertext read back
+        from the vault is copied verbatim (no decryption, no re-encryption): a metadata edit
+        can never drop or rewrite somebody's password. Password rotation on v4 stays a vault
+        UI action.
+        """
+        if "secret_source" in fields:
+            raise ValueError(
+                "Passbolt v4 password rotation is not supported; change the password in the vault UI"
+            )
+        payload: dict[str, Any] = {}
+        if "name" in fields:
+            payload["name"] = _text(fields["name"], "name", 255, required=True)
+        if "username" in fields:
+            payload["username"] = _text(fields["username"], "username", 255)
+        if "description" in fields:
+            payload["description"] = _text(fields["description"], "description", 10_000)
+        if "uri" in fields:
+            value = fields["uri"]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                payload["uri"] = None
+            else:
+                uri = _new_uri(str(value))
+                if len(uri) > 255:
+                    raise ValueError("uri must be at most 255 characters for a v4 resource")
+                payload["uri"] = uri
+        # A partial PUT must not blank the fields it does not mention.
+        for key in ("name", "username", "uri", "description"):
+            if key not in payload:
+                current = resource.get(key)
+                payload[key] = current if isinstance(current, str) else None
+        secrets = resource.get("secrets")
+        if isinstance(secrets, list):
+            verbatim = [
+                {"user_id": item.get("user_id"), "data": item.get("data")}
+                for item in secrets
+                if isinstance(item, dict) and item.get("user_id") and item.get("data")
+            ]
+            if verbatim:
+                payload["secrets"] = verbatim
+        result = _unwrap(
+            await self._request(
+                "PUT",
+                f"/resources/{quote(_uuid(str(resource.get('id')), 'resource_id'))}.json",
+                payload=payload,
+            )
+        )
+        if not isinstance(result, dict):
+            raise ProviderResponseError("Passbolt resource response is invalid")
+        updated = str(result.get("id") or resource.get("id"))
+        return {
+            "resource_id": updated,
+            "updated": True,
+            "name": payload.get("name"),
+            "uri": payload.get("uri"),
+        }
+
     async def update_resource(
         self,
         *,
@@ -2632,6 +2695,9 @@ class PassboltAdapter:
             raise ValueError("Passbolt update fields are empty or unsupported")
         # The update keeps the existing resource type; it never converts one type into another.
         resource_type_id = str(resource.get("resource_type_id") or "").lower()
+        if resource_type_id == V4_PASSWORD_DESCRIPTION_RESOURCE_TYPE_ID:
+            # Legacy v4 resources keep plaintext metadata; the v5 envelope does not apply.
+            return await self._update_v4_resource(resource, fields)
         if resource_type_id not in UPDATABLE_RESOURCE_TYPE_IDS:
             raise ValueError("Passbolt update supports only v5-default and v5-pin-code resources")
         if resource_type_id == V5_PIN_CODE_RESOURCE_TYPE_ID and set(fields) - PIN_CODE_UPDATE_FIELDS:
