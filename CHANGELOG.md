@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.3
+
+- The android sink decides by the login form, not by the app's wording: a successful sign-in
+  removes the login fields, so a form still on screen after the timeout is reported as `rejected`
+  ("the login fields are still on screen") instead of `unconfirmed`. A visible app error text is
+  still kept in `detail`, but the outcome never depends on it — no toast reading, no wording
+  matching that breaks when a stand changes its message.
+
 ## 0.10.2
 
 - The android sink no longer requires the field to read back the exact typed text: a password

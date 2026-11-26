@@ -14,7 +14,6 @@ sys.path.insert(0, str(SINKS))
 from passbolt_sinkkit.cli import DEFAULT_DATABASES, PROTOCOLS  # noqa: E402
 from passbolt_sinkkit.errors import (  # noqa: E402
     AuthRejected,
-    AuthUnconfirmed,
     InputError,
     TargetError,
 )
@@ -241,11 +240,12 @@ def test_app_refusal_is_reported_with_the_site_wording(monkeypatch: pytest.Monke
         android_exec.run(TARGET, "operator", "s3cret", PROFILE_PLAN)
 
 
-def test_still_visible_form_is_unconfirmed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_still_visible_login_form_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No wording needed: if the login fields are still there, the sign-in failed."""
     device = FakeDevice([LOGIN_SCREEN])  # the click changes nothing
     _fake_u2(monkeypatch, device)
 
-    with pytest.raises(AuthUnconfirmed):
+    with pytest.raises(AuthRejected, match="login fields are still on screen"):
         android_exec.run(TARGET, "operator", "s3cret", {**PROFILE_PLAN, "timeout_ms": 600})
 
 

@@ -14,7 +14,6 @@ from typing import Any
 
 from passbolt_sinkkit.errors import (
     AuthRejected,
-    AuthUnconfirmed,
     FormError,
     InputError,
     MfaRequired,
@@ -30,8 +29,8 @@ MAX_NODES = 500
 # The app's own refusal, in the wording these stands use (see the web sink for the same idea).
 _FAILURE_RE = re.compile(
     r"(неверн|неправильн|ошибк[аи]\s*(входа|авторизаци|логина|пароля)?|доступ\s+запрещ"
-    r"|заблокиров|пользовател[ья]\s+не\s+найден|invalid|incorrect|wrong\s+password"
-    r"|unauthoriz|access\s+denied|forbidden|locked\s*out)",
+    r"|заблокиров|пользовател[ьи]\s+не\s+(найден|авторизов)|не\s+авторизов"
+    r"|invalid|incorrect|wrong\s+password|unauthoriz|access\s+denied|forbidden|locked\s*out)",
     re.IGNORECASE,
 )
 _MFA_RE = re.compile(r"(код|code|otp|2fa|two-factor|подтвержд)", re.IGNORECASE)
@@ -234,7 +233,7 @@ def _classify(device, plan: dict[str, Any]) -> dict[str, Any]:
     verify = plan.get("verify") if isinstance(plan.get("verify"), dict) else None
     while True:
         state = _state(_nodes(device))
-        refused = _refusal(state)
+        refused = _refusal(state)  # the app's own error text, when it shows one
         if refused:
             raise AuthRejected(refused)
         if state["mfa"]:
@@ -267,7 +266,9 @@ def _classify(device, plan: dict[str, Any]) -> dict[str, Any]:
                 "activity": str(current.get("activity") or plan.get("activity") or ""),
             }
         if time.monotonic() >= deadline:
-            raise AuthUnconfirmed("the android login screen is still on screen")
+            # Universal signal: a successful sign-in removes the login fields. If they are still
+            # there, the attempt failed — whatever the app did or did not say about it.
+            raise AuthRejected("the login fields are still on screen")
         time.sleep(POLL_SECONDS)
 
 

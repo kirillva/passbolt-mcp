@@ -132,8 +132,10 @@ uiautomator2 (`--device <serial>`, иначе `ANDROID_SERIAL`, иначе ед�
 `wait`. `verify`: `present` или `absent` + `timeout_ms`; без него успех — исчезло поле пароля.
 Без профиля работает эвристика: два EditText (пароль с `password=true`) и кнопка «Ок/Войти/Login».
 
-Статусы и коды те же, что у веб-синка: `logged_in`, `rejected` (текст отказа приложения в
-`detail`), `unconfirmed`, `mfa_required`, `timeout`, `no_target`, `form_error`. Пароль вводится
+Статусы: `logged_in` (поля логина исчезли — единственный признак успеха), `rejected` (поля
+логина остались на экране после `timeout_ms`; текст ошибки приложения, если он виден, попадает
+в `detail`, но решение от него не зависит), `mfa_required`, `timeout`, `no_target`,
+`form_error`. Пароль вводится
 через accessibility (`set_text`), а не `adb shell input text`, поэтому не попадает в командную
 строку процессов на хосте.
 

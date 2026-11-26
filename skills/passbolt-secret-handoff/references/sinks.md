@@ -36,8 +36,9 @@ domain allowlist to satisfy: the vault is the list. A browser upgrades HTTP on i
 open tab may sit on 443 while the record says 80 — same site, the sink follows it. One trap: a
 site that calls its own API over plain HTTP must keep its tab on HTTP too.
 
-An `android://<package>[/<Activity>]` record targets an app: the tab must already be open (the
-app in the foreground), and the same `logged_in`/`rejected`/`unconfirmed` statuses apply.
+An `android://<package>[/<Activity>]` record targets an app: the app must already be in the
+foreground. Success is the login fields disappearing; a form still on screen after the timeout is
+`rejected` (an app's visible error text lands in `detail`, but the outcome never depends on it).
 
 A `custom://<label>` record names its address in the note instead (`scheme`, `host`, `port`,
 `database`, `path` as `key = value` lines): the server resolves and validates it, and the sink
