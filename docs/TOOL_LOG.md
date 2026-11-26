@@ -24,7 +24,7 @@ JSON-объектом на строку.
 | `error` | класс исключения (`ProviderConfigurationError`, `ValueError`, …) |
 | `hint` | наша собственная подсказка из конверта — если она есть, её и надо донести до инструкций |
 | `actor`, `execution_id`, `duration_ms` | принципал, id исполнения (сходится с таблицей `audit` в `state/passbolt.sqlite`), длительность |
-| `arguments` | форма аргументов: безопасные строки как есть (`target_url` — только host:port, `query`, `sink_ref`, `page`, `resource_id`, `limit`…), остальное — `{"chars": N}`, `{"kind": "object", "fields": N}` |
+| `arguments` | форма аргументов: безопасные строки как есть (`target_url` — схема и host:port, `query`, `sink_ref`, `page`, `resource_id`, `limit`…), остальное — `{"chars": N}`, `{"kind": "object", "fields": N}` |
 
 Чего в логе **не бывает**: пароля, `secret_source`, `note`, `fields`, полного URI с
 путём/query, текста ошибки провайдера или синка. Строка обрезается до 2 КБ так, чтобы

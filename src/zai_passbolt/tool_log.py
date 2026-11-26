@@ -73,9 +73,14 @@ def _safe_text(value: Any, limit: int) -> str | None:
 
 
 def safe_site(value: str) -> str:
-    """Host and port of a site hint: credentials, path, query and fragment are dropped."""
+    """Address of a site hint: scheme and host:port stay, credentials/path/query go.
+
+    The scheme is what distinguishes "the record is http" from "the model typed
+    https", which is exactly the class of mistake the guides have to explain.
+    """
     text = value.strip()
-    candidate = text if "://" in text else f"https://{text}"
+    has_scheme = "://" in text
+    candidate = text if has_scheme else f"https://{text}"
     try:
         parsed = urlsplit(candidate)
         host = (parsed.hostname or "").rstrip(".")
@@ -84,7 +89,11 @@ def safe_site(value: str) -> str:
         return "<unparsable>"
     if not host:
         return "<unparsable>"
-    return f"{host}:{port}" if port else host
+    authority = f"{host}:{port}" if port else host
+    if not has_scheme:
+        return authority
+    scheme = parsed.scheme if parsed.scheme in {"http", "https", "ssh", "postgres"} else "<scheme>"
+    return f"{scheme}://{authority}"
 
 
 def summarize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.5
+
+- The tool-error log keeps the scheme of a `target_url` hint (`http://demo.example`) instead of
+  collapsing it to a bare host. Credentials, path, query and fragment are still dropped, but
+  `http` vs `https` is exactly the mistake the guides have to explain, so it has to be readable
+  in the log.
+
 ## 0.7.4
 
 - Every failed tool call leaves a local, private line in

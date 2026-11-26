@@ -60,13 +60,21 @@ def test_error_log_is_private_jsonl_and_drops_secrets(tmp_path: Path) -> None:
     assert entry["tool"] == "passbolt_create_resource"
     assert entry["code"] == "provider_configuration_invalid"
     assert entry["hint"] == "store the site as HTTPS"
-    assert entry["arguments"]["target_url"] == "example.com"
+    assert entry["arguments"]["target_url"] == "https://example.com"
     assert entry["arguments"]["query"] == "Office wifi"
     assert entry["arguments"]["limit"] == 20
     assert entry["arguments"]["approved"] is True
     assert entry["arguments"]["name"] == {"chars": 6}
     assert "secret_source" not in entry["arguments"] and "fields" not in entry["arguments"]
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+def test_site_hint_keeps_the_scheme_but_nothing_private() -> None:
+    assert tool_log.safe_site("http://demo.example/arm/x?token=1#f") == "http://demo.example"
+    assert tool_log.safe_site("https://u:p@demo.example:8443/x") == "https://demo.example:8443"
+    assert tool_log.safe_site("demo.example:8443") == "demo.example:8443"
+    assert tool_log.safe_site("ftp://demo.example/x") == "<scheme>://demo.example"
+    assert tool_log.safe_site("https://") == "<unparsable>"
 
 
 def test_log_rotates_by_size_and_every_line_stays_parseable(
