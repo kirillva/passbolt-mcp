@@ -252,6 +252,7 @@ class Runtime:
                 converted.error_code,
                 converted.envelope.get("hint"),
                 type(exc).__name__,
+                str(exc) if isinstance(exc, ValueError) else None,
             )
             raise converted from None
         finally:
@@ -272,6 +273,7 @@ class Runtime:
         code: str,
         hint: Any,
         error: str | None,
+        detail: str | None = None,
     ) -> None:
         """Best-effort local error log: the operator reads it to fix the instructions."""
         tool_log.record_error(
@@ -282,6 +284,7 @@ class Runtime:
             code=code,
             error=error,
             hint=hint if isinstance(hint, str) else None,
+            detail=detail,
             actor=actor,
             execution_id=execution,
             duration_ms=int((time.monotonic() - started) * 1000),

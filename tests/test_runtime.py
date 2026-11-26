@@ -428,6 +428,7 @@ async def test_a_failed_tool_call_lands_in_the_local_error_log(config, monkeypat
     entry = entries[0]
     assert entry["code"] == "validation_failed"
     assert entry["arguments"]["target_url"] == "<scheme>://example.com"
+    assert "must be an http(s) site" in entry["detail"]
     assert entry["duration_ms"] >= 0 and entry["version"] and entry["execution_id"]
 
 

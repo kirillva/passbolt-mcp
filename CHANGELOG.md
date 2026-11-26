@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.6
+
+- The local error log records `detail` for validation failures — the message this project authored
+  ("must be an http(s) site without credentials", "v5-default metadata has fields outside its
+  schema"), bounded to 300 characters. Provider payloads and secrets still never reach it, but an
+  operator can now see why a call was refused instead of only the exception class.
+
 ## 0.8.5
 
 - A local validation error during a write (an unsupported field, a rejected URI) settled the
