@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - Update checks can follow a downstream feed: `PASSBOLT_UPDATE_REPOSITORY` selects whose releases
   or tags are compared (default `zai-one/passbolt-mcp`) and is validated before it reaches any URL,
@@ -29,8 +29,6 @@
   vault reads (`passbolt_search`, `passbolt_directory`, `passbolt_list_folders`, `passbolt_status`) from
   the sliding 60-second request quota. The provider-failure cooldown (HTTP 429, timeout, transport
   error) and the single in-flight lease still apply, and every write or secret-use path keeps counting.
-
-## 0.7.0
 
 - Sinks: the delivery target (host, port, path/database) is derived from the Passbolt resource URI;
   callers cannot override it. Removed the domain allowlist check and mismatch approvals from the
