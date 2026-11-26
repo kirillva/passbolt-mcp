@@ -21,6 +21,7 @@ from zai_passbolt.transport import (
     JsonHttpClient,
     LocalPreDispatchDenied,
     ProviderAdmissionDenied,
+    ProviderError,
     ProviderRateLimited,
     ProviderTimeoutError,
     ProviderTransportError,

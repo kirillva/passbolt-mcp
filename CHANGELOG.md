@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.6
+
+- Fix the import that 0.9.5 missed: `runtime.py` referenced `ProviderError` without importing it,
+  so any failing call would have raised `NameError` while writing the log entry.
+
 ## 0.9.5
 
 - The local error log keeps the message of every failure this project authors (`ValueError`,
