@@ -366,7 +366,28 @@ def test_web_guard_requires_exactly_one_tab() -> None:
     other_port = {"type": "page", "url": "https://a.example:8443/login"}
     assert web_guard.pick_page([page, other_port], target) == page
     duplicate = {"type": "page", "url": "https://a.example/login?step=2"}
-    assert web_guard.pick_page([page, duplicate], target) is None
+    with pytest.raises(web_guard.TargetError):
+        web_guard.pick_page([page, duplicate], target)
+
+
+def test_web_guard_selects_a_tab_by_marker() -> None:
+    target = {"host": "a.example", "port": 443, "path": "/app"}
+    first = {
+        "type": "page",
+        "url": "https://a.example/app/?pb=u-one#/auth",
+        "webSocketDebuggerUrl": "ws://one",
+    }
+    second = {
+        "type": "page",
+        "url": "https://a.example/app/?pb=u-two#/auth",
+        "webSocketDebuggerUrl": "ws://two",
+    }
+    assert web_guard.pick_page([first, second], target, "u-one") == first
+    assert web_guard.pick_page([first, second], target, "u-two") == second
+    with pytest.raises(web_guard.TargetError):
+        web_guard.pick_page([first, second], target, "u-three")
+    with pytest.raises(web_guard.TargetError):
+        web_guard.pick_page([first, second], target)
 
 
 def _install(tmp_path: Path, only: str = "login_fill,pg_ro") -> tuple[Path, Path, Path]:

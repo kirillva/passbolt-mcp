@@ -293,8 +293,9 @@ class StateStore:
         """Admit one vault request.
 
         The cooldown always applies: it is a provider 429, timeout or transport failure that
-        the vault asked us to respect. Only the sliding 60s request window can be skipped,
-        and only for operator-exempt metadata reads (ServiceConfig.rate_limit_exempt_read_only).
+        the vault asked us to respect. Only the sliding 60s request window can be skipped:
+        by operator-exempt metadata reads (ServiceConfig.rate_limit_exempt_read_only) or
+        for the whole process when ``rate_limit == 0``.
         """
         vault = self.vault(actor)
         with self.connect() as db:
@@ -305,7 +306,7 @@ class StateStore:
             ).fetchone()
             if cooldown and cooldown[0] > now:
                 raise ProviderAdmissionDenied("vault is cooling down", retry_after_seconds=60)
-            if not counts_toward_quota:
+            if not counts_toward_quota or self.config.rate_limit <= 0:
                 return
             count = db.execute(
                 "SELECT COUNT(*) FROM attempts WHERE account=? AND vault=? AND started>?",

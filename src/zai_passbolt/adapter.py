@@ -373,6 +373,20 @@ def _origin_label(value: str, field: str) -> str:
     return origin
 
 
+_PAGE_MARKER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+
+
+def validate_page_marker(value: str | None) -> str | None:
+    """A non-secret browser-tab marker; it never changes the delivery target."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or _PAGE_MARKER_RE.fullmatch(value) is None:
+        raise ValueError(
+            "Passbolt page marker must be 1-32 characters of lowercase [a-z0-9._-]"
+        )
+    return value
+
+
 def _bounded_query(value: str, *, required: bool) -> str:
     normalized = value.strip()
     if required and not normalized:
@@ -422,8 +436,14 @@ def _safe_nested_label(value: Any) -> str | None:
     return None
 
 
-def safe_resource(value: Any) -> dict[str, Any]:
-    """Project only fields that are safe to return to an MCP caller."""
+def safe_resource(value: Any, *, include_note: bool = False) -> dict[str, Any]:
+    """Project only fields that are safe to return to an MCP caller.
+
+    ``include_note`` adds the decrypted resource description (v5 metadata). It is
+    opt-in and used only for a single bound selection: the search listing must not
+    dump every note into the conversation. The secret note, password and TOTP are
+    never part of this projection.
+    """
     if not isinstance(value, dict):
         return {}
     result: dict[str, Any] = {}
@@ -437,6 +457,13 @@ def safe_resource(value: Any) -> dict[str, Any]:
                 result[key] = label
         elif isinstance(item, (str, int, float, bool)):
             result[key] = str(item)[:2048] if isinstance(item, str) else item
+    if include_note:
+        note = value.get("description")
+        if isinstance(note, str) and note.strip():
+            result["note"] = note[:10_000]
+            result["note_available"] = True
+        else:
+            result["note_available"] = False
     if "id" in result:
         result["resource_id"] = result.pop("id")
     type_id = value.get("resource_type_id")
@@ -698,6 +725,24 @@ class PassboltSinkDispatcher:
             raise ProviderError("Passbolt secure sink registry is invalid")
         return {str(key): value for key, value in sinks.items() if isinstance(value, dict)}
 
+    def summary(self) -> list[dict[str, Any]]:
+        """Registered sink metadata only: no command, no path, no secret."""
+        try:
+            sinks = self._load()
+        except ProviderError:
+            return []
+        result = []
+        for ref, config in sorted(sinks.items()):
+            result.append(
+                {
+                    "sink_ref": ref,
+                    "kind": config.get("kind"),
+                    "requires_job": bool(config.get("requires_job")),
+                    "require_approval": config.get("require_approval", "never"),
+                }
+            )
+        return result
+
     def definition(self, sink_ref: str) -> dict[str, Any]:
         if not isinstance(sink_ref, str) or _SINK_REF_RE.fullmatch(sink_ref) is None:
             raise PermissionError("Passbolt sink_ref is invalid")
@@ -900,14 +945,47 @@ class PassboltSinkDispatcher:
             raise ProviderError("Passbolt out_file sink command must contain {path}")
         return command
 
-    @staticmethod
-    def _run(command: list[str], *, stdin: str | None, timeout: int) -> None:
+    _SINK_RESULT_KEYS = (
+        "status",
+        "sink",
+        "url",
+        "account",
+        "page",
+        "host",
+        "port",
+        "error",
+        "detail",
+    )
+
+    @classmethod
+    def _sink_result(cls, stdout: str | None) -> dict[str, Any]:
+        """Read the last JSON object a sink printed; it never carries a secret."""
+        if not isinstance(stdout, str):
+            return {}
+        for line in reversed(stdout.strip().splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return {
+                    key: parsed[key]
+                    for key in cls._SINK_RESULT_KEYS
+                    if isinstance(parsed.get(key), (str, int)) and not isinstance(parsed.get(key), bool)
+                }
+        return {}
+
+    @classmethod
+    def _run(cls, command: list[str], *, stdin: str | None, timeout: int) -> dict[str, Any]:
         try:
             result = subprocess.run(
                 command,
                 input=stdin,
                 text=True,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout,
                 check=False,
@@ -915,8 +993,12 @@ class PassboltSinkDispatcher:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ProviderError("Passbolt secure sink failed") from exc
-        if result.returncode != 0:
+        parsed = cls._sink_result(result.stdout)
+        # A structured failure (for example "several tabs") is more useful than a
+        # generic error, so keep it; only a silent non-zero exit is fatal here.
+        if result.returncode != 0 and not parsed:
             raise ProviderError("Passbolt secure sink failed")
+        return parsed
 
     async def deliver(
         self,
@@ -929,7 +1011,8 @@ class PassboltSinkDispatcher:
         target: Mapping[str, Any] | None = None,
         job: Mapping[str, Any] | None = None,
         job_sha256: str | None = None,
-    ) -> bool:
+        page: str | None = None,
+    ) -> bool | dict[str, Any]:
         config = self.definition(sink_ref)
         kind = config.get("kind")
         timeout = config.get("timeout_seconds", 30)
@@ -951,11 +1034,15 @@ class PassboltSinkDispatcher:
         if job is not None:
             payload["job"] = job
             payload["job_sha256"] = job_sha256
+        if page is not None:
+            # A non-secret tab marker: it selects the browser tab, never the host.
+            payload["page"] = page
         envelope = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if kind == "secure_fill":
             assert command is not None
-            await asyncio.to_thread(self._run, command, stdin=envelope, timeout=timeout)
-            return True
+            output = await asyncio.to_thread(self._run, command, stdin=envelope, timeout=timeout)
+            # Sinks that print no structured result keep the old boolean contract.
+            return output or True
         if kind != "out_file":
             raise PermissionError("Passbolt sink kind is not allowed")
         directory_value = config.get("directory")
@@ -1553,18 +1640,41 @@ class PassboltAdapter:
                 log_probe_failure(logger, "decrypt_canary_failed", trace)
         return result
 
-    @staticmethod
-    def validate_search(query: str, target_url: str | None, limit: int) -> tuple[str, str | None, int]:
-        normalized_query = _bounded_query(query, required=True)
-        normalized_target = _https_url(target_url, "target_url") if target_url else None
-        return normalized_query, normalized_target, _bounded_limit(limit)
+    def sink_summary(self) -> list[dict[str, Any]]:
+        """Registered sinks so callers never have to guess a sink_ref."""
+        return self.sinks.summary()
 
     @staticmethod
-    def validate_select(target_url: str, query: str, limit: int) -> tuple[str, str, int]:
+    def validate_username(username: str | None) -> str | None:
+        if username is None:
+            return None
+        normalized = str(username).strip()
+        if not normalized:
+            return None
+        if len(normalized) > 255 or any(ord(char) < 32 for char in normalized):
+            raise ValueError("Passbolt username filter is invalid")
+        return normalized
+
+    @staticmethod
+    def validate_search(
+        query: str, target_url: str | None, limit: int, username: str | None = None
+    ) -> tuple[str, str | None, int, str | None]:
+        normalized_query = _bounded_query(query, required=False)
+        normalized_target = _https_url(target_url, "target_url") if target_url else None
+        normalized_username = PassboltAdapter.validate_username(username)
+        if not normalized_query and not normalized_target and not normalized_username:
+            raise ValueError("Passbolt query, target_url or username is required")
+        return normalized_query, normalized_target, _bounded_limit(limit), normalized_username
+
+    @staticmethod
+    def validate_select(
+        target_url: str, query: str, limit: int, username: str | None = None
+    ) -> tuple[str, str, int, str | None]:
         return (
-            _https_url(target_url, "target_url"),
+            _https_url(target_url, "target_url") if target_url else "",
             _bounded_query(query, required=False),
             _bounded_limit(limit),
+            PassboltAdapter.validate_username(username),
         )
 
     async def _decrypt_metadata(self, resource: Mapping[str, Any]) -> dict[str, Any]:
@@ -1624,7 +1734,7 @@ class PassboltAdapter:
         folders.sort(key=lambda row: (str(row["name"] or "").lower(), row["folder_id"]))
         return {"folders": folders, "count": len(folders), "secret_disclosed": False}
 
-    async def _all_resources(self) -> list[dict[str, Any]]:
+    async def _all_resources(self, *, include_note: bool = False) -> list[dict[str, Any]]:
         payload = await self._request("GET", "/resources.json")
         body = _unwrap(payload)
         if isinstance(body, dict):
@@ -1636,21 +1746,60 @@ class PassboltAdapter:
         rows: list[dict[str, Any]] = []
         for item in body:
             hydrated = await self._hydrate_metadata(item)
-            safe = safe_resource(hydrated)
+            safe = safe_resource(hydrated, include_note=include_note)
             if safe.get("resource_id"):
                 rows.append(safe)
         if body and not any(item.get("name") or item.get("uri") or item.get("username") for item in rows):
             raise ProviderResponseError("Passbolt safe metadata is unavailable")
         return rows
 
-    def _score(self, resource: dict[str, Any], query: str, target_url: str | None) -> tuple[int, str]:
+    def _matches(
+        self,
+        resource: dict[str, Any],
+        query: str,
+        target_url: str | None,
+        username: str | None,
+    ) -> bool:
+        """Every provided filter must hold (AND); each field is matched separately."""
+        if username and username.lower() not in str(resource.get("username") or "").lower():
+            return False
+        if query:
+            lowered = query.lower()
+            if not any(
+                lowered in str(resource.get(field, "")).lower()
+                for field in ("name", "uri", "username")
+            ):
+                return False
+        return not (
+            target_url
+            and not self.domain_decision(str(resource.get("uri") or ""), target_url).matches
+        )
+
+    def _score(
+        self,
+        resource: dict[str, Any],
+        query: str,
+        target_url: str | None,
+        username: str | None = None,
+    ) -> tuple[int, str]:
         score = 0
         reasons: list[str] = []
         lowered = query.lower()
-        for field, weight in (("name", 35), ("uri", 25), ("username", 10)):
-            if lowered and lowered in str(resource.get(field, "")).lower():
-                score += weight
-                reasons.append(f"{field}_contains_query")
+        if lowered:
+            # Separate fields only: joining them would match across field boundaries.
+            for field, weight in (("name", 35), ("uri", 25), ("username", 10)):
+                if lowered in str(resource.get(field, "")).lower():
+                    score += weight
+                    reasons.append(f"{field}_contains_query")
+        if username:
+            wanted = username.lower()
+            actual = str(resource.get("username") or "").lower()
+            if actual == wanted:
+                score += 50
+                reasons.append("username_exact")
+            elif wanted in actual:
+                score += 20
+                reasons.append("username_contains_filter")
         decision = self.domain_decision(str(resource.get("uri") or ""), target_url)
         if target_url and decision.matches:
             score += 60
@@ -1660,31 +1809,39 @@ class PassboltAdapter:
             reasons.append(decision.reason)
         return score, ",".join(reasons) or "metadata_match"
 
+    @staticmethod
+    def _candidate(resource: dict[str, Any]) -> dict[str, Any]:
+        keys = ("resource_id", "name", "uri", "username", "resource_type", "modified", "folder")
+        return {key: resource[key] for key in keys if resource.get(key) is not None}
+
     async def search(
         self,
         query: str,
         target_url: str | None = None,
         limit: int = 20,
         *,
+        username: str | None = None,
+        include_note: bool = False,
+        origin_filter: bool = True,
         allowed_resource_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
-        query, target_url, limit = self.validate_search(query, target_url, limit)
-        rows = await self._all_resources()
+        query, target_url, limit, username = self.validate_search(query, target_url, limit, username)
+        rows = await self._all_resources(include_note=include_note)
         if allowed_resource_ids is not None:
             rows = [row for row in rows if str(row.get("resource_id")) in allowed_resource_ids]
-        matching = [
-            row
-            for row in rows
-            if query.lower()
-            in " ".join(str(row.get(field, "")) for field in ("name", "uri", "username")).lower()
-            or (target_url and self.domain_decision(str(row.get("uri") or ""), target_url).matches)
-        ]
         ranked = []
-        for row in matching:
-            score, reason = self._score(row, query, target_url)
+        for row in rows:
+            if not self._matches(row, query, target_url if origin_filter else None, username):
+                continue
+            score, reason = self._score(row, query, target_url, username)
             ranked.append({**row, "score": score, "reason": reason})
         ranked.sort(key=lambda item: (-int(item["score"]), str(item.get("name", "")).lower()))
-        return {"resources": ranked[:limit], "secret_disclosed": False}
+        return {
+            "resources": ranked[:limit],
+            "count": len(ranked),
+            "partial": len(ranked) > limit,
+            "secret_disclosed": False,
+        }
 
     async def select(
         self,
@@ -1692,30 +1849,72 @@ class PassboltAdapter:
         query: str = "",
         limit: int = 10,
         *,
+        username: str | None = None,
+        resource_id: str | None = None,
         allowed_resource_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
-        if target_url is not None:
-            target_url = self.validate_select(target_url, query, limit)[0]
-        if not query and not target_url:
-            raise ValueError("either query or target_url is required")
-        search_query = query or (_host(target_url) or "")
-        result = await self.search(
-            search_query,
-            target_url,
-            limit,
-            allowed_resource_ids=allowed_resource_ids,
-        )
-        resource = result["resources"][0] if result["resources"] else None
-        if target_url:
-            decision = self.domain_decision(
-                str(resource.get("uri") or "") if resource else None, target_url
+        """Bind exactly one record; only that record's note is decrypted into the result."""
+        if resource_id is not None:
+            target_url = _https_url(target_url, "target_url") if target_url else None
+            limit = _bounded_limit(limit)
+            username = self.validate_username(username)
+            query = ""
+        else:
+            query, target_url, limit, username = self.validate_search(
+                query, target_url, limit, username
             )
-            domain_match, domain_reason = decision.matches, decision.reason
+        if resource_id is not None:
+            rows = await self._all_resources(include_note=True)
+            if allowed_resource_ids is not None:
+                rows = [
+                    row for row in rows if str(row.get("resource_id")) in allowed_resource_ids
+                ]
+            wanted = _uuid(resource_id, "resource_id")
+            matches = [row for row in rows if row["resource_id"] == wanted]
+        else:
+            # ``target_url`` is a ranking hint here, not a hard filter: records
+            # without a URI (e.g. PIN codes) must stay selectable. Prefer records
+            # on the hinted origin and fall back to the rest only when none match.
+            result = await self.search(
+                query,
+                target_url,
+                limit,
+                username=username,
+                include_note=True,
+                origin_filter=False,
+                allowed_resource_ids=allowed_resource_ids,
+            )
+            ranked = list(result["resources"])
+            if target_url:
+                on_origin = [
+                    row
+                    for row in ranked
+                    if self.domain_decision(str(row.get("uri") or ""), target_url).matches
+                ]
+                ranked = on_origin or ranked
+            matches = ranked[:limit]
+
+        ambiguous = len(matches) > 1
+        resource = matches[0] if len(matches) == 1 else None
+        if target_url:
+            if resource is not None:
+                decision = self.domain_decision(str(resource.get("uri") or ""), target_url)
+                domain_match, domain_reason = decision.matches, decision.reason
+            elif matches:
+                domain_match = all(
+                    self.domain_decision(str(row.get("uri") or ""), target_url).matches
+                    for row in matches
+                )
+                domain_reason = "ambiguous_candidates"
+            else:
+                domain_match, domain_reason = False, "resource_not_found"
         else:
             # The hint is optional; the delivery target always comes from the record.
             domain_match, domain_reason = False, "no_target_hint"
         return {
             "resource": resource,
+            "candidates": [self._candidate(row) for row in matches] if ambiguous else [],
+            "ambiguous": ambiguous,
             "domain_match": domain_match,
             "confirmation_required": False,
             "domain_reason": domain_reason,
@@ -2543,7 +2742,9 @@ class PassboltAdapter:
         target: Mapping[str, Any] | None = None,
         job: Mapping[str, Any] | None = None,
         job_sha256: str | None = None,
-    ) -> dict[str, bool]:
+        page: str | None = None,
+    ) -> dict[str, Any]:
+        page = validate_page_marker(page)
         secret = await self._secret_payload(resource_id)
         password = secret.get("password")
         if not isinstance(password, str) or not password:
@@ -2561,5 +2762,12 @@ class PassboltAdapter:
             target=resolved,
             job=job,
             job_sha256=job_sha256,
+            page=page,
         )
-        return {"delivered_to_sink": delivered}
+        if isinstance(delivered, dict):
+            # Sanitised sink outcome: status/url/account/page, never a secret.
+            if not delivered:
+                return {"delivered_to_sink": True}
+            status = str(delivered.get("status") or "")
+            return {"delivered_to_sink": status in {"ok", "logged_in"}, **delivered}
+        return {"delivered_to_sink": bool(delivered)}

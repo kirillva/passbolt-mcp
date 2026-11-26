@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from passbolt_sinkkit.errors import Denied, InputError
+from passbolt_sinkkit.errors import Denied, InputError, TargetError
 
 MAX_TARGETS = 200
 MAX_STEPS = 30
@@ -61,8 +61,28 @@ def path_matches(path: str, prefix: str) -> bool:
     return prefix in {"", "/"} or path.startswith(prefix)
 
 
-def pick_page(targets: list[Any], target: dict[str, Any]) -> dict[str, Any] | None:
-    """Exactly one tab must match host, port and the record path prefix."""
+def tab_marker(url: str) -> str | None:
+    """Read the non-secret ``pb`` marker from a tab URL query string."""
+    try:
+        query = urlsplit(url).query
+    except ValueError:
+        return None
+    for part in query.split("&"):
+        key, _, value = part.partition("=")
+        if key == "pb":
+            return value or None
+    return None
+
+
+def pick_page(
+    targets: list[Any], target: dict[str, Any], page: str | None = None
+) -> dict[str, Any] | None:
+    """Pick exactly one tab on the record origin.
+
+    With ``page`` the tab must carry ``?pb=<page>`` so several accounts can be
+    logged in side by side on the same site. Without it the old rule applies and
+    an ambiguous set is a hard error listing the candidate count, never a guess.
+    """
     if len(targets) > MAX_TARGETS:
         raise InputError("too many browser targets")
     pages = []
@@ -77,13 +97,31 @@ def pick_page(targets: list[Any], target: dict[str, Any]) -> dict[str, Any] | No
     prefix = target["path"] if target["path"] not in {"", "/"} else ""
     if prefix:
         exact = [
-            page
-            for page in pages
-            if path_matches(urlsplit(str(page.get("url"))).path, prefix)
+            page_item
+            for page_item in pages
+            if path_matches(urlsplit(str(page_item.get("url"))).path, prefix)
         ]
         if exact:
             pages = exact
-    return pages[0] if len(pages) == 1 else None
+    if page is not None:
+        marked = [
+            page_item
+            for page_item in pages
+            if tab_marker(str(page_item.get("url") or "")) == page
+        ]
+        if len(marked) == 1:
+            return marked[0]
+        if not marked:
+            raise TargetError(
+                f"no browser tab carries page marker {page!r} ({len(pages)} tab(s) on this origin)"
+            )
+        raise TargetError(f"{len(marked)} browser tabs carry page marker {page!r}")
+    if len(pages) == 1:
+        return pages[0]
+    raise TargetError(
+        f"{len(pages)} browser tabs match this origin; open a tab with ?pb=<marker> "
+        "and pass page=<marker>"
+    )
 
 
 def _selector(value: Any) -> str:
@@ -170,6 +208,21 @@ def select_profile(document: dict[str, Any], target: dict[str, Any]) -> dict[str
     return None
 
 
+def validate_verify(value: Any) -> dict[str, str] | None:
+    """Declarative post-login check: read a sessionStorage key, compare to a value ref."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise InputError("verify is invalid")
+    key = value.get("session_storage")
+    reference = value.get("equals_ref", "username")
+    if not isinstance(key, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", key) is None:
+        raise InputError("verify.session_storage is invalid")
+    if reference not in VALUE_REFS:
+        raise InputError("verify.equals_ref is invalid")
+    return {"session_storage": key, "equals_ref": reference}
+
+
 def build_plan(document: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
     profile = select_profile(document, target)
     if not isinstance(profile, dict) or profile.get("mode") == "heuristic":
@@ -177,4 +230,11 @@ def build_plan(document: dict[str, Any], target: dict[str, Any]) -> dict[str, An
     steps = profile.get("steps")
     if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_STEPS:
         raise InputError("profile steps are invalid")
-    return {"mode": "profile", "steps": [validate_step(step) for step in steps]}
+    plan: dict[str, Any] = {
+        "mode": "profile",
+        "steps": [validate_step(step) for step in steps],
+    }
+    verify = validate_verify(profile.get("verify"))
+    if verify is not None:
+        plan["verify"] = verify
+    return plan

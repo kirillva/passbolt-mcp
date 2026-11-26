@@ -42,17 +42,19 @@ DESCRIPTIONS = {
     "resource. Use before share or in access reviews. Metadata only; no emails, never secrets.",
     "passbolt_local_diagnostics": "Check local key usability and binding policy. Use when setup fails; "
     "vault auth via `passbolt_status`. Cost: no vault call; never returns secrets.",
-    "passbolt_status": "Probe Passbolt auth and a v5 decrypt canary. Use before first real task. "
-    "Returns booleans only; never secrets.",
-    "passbolt_search": "Search resource metadata (name, URI, username) within policy. Use to find a "
-    "credential; then `passbolt_select`. Never returns passwords.",
+    "passbolt_status": "Probe Passbolt auth and a v5 decrypt canary. Returns booleans plus registered "
+    "sink_refs (kind/approval) and allowed domain_hosts; never secrets.",
+    "passbolt_search": "Search decrypted v5 metadata by name, URI and username. Filters combine with "
+    "AND: query (substring), target_url (site origin), username. target_url alone lists every account "
+    "on that site. Then passbolt_select. Never returns passwords or notes.",
     "passbolt_list_folders": "List folder metadata (id, name, parent, personal) within policy. Use for "
     "access reviews and before create/share. Never returns secrets.",
-    "passbolt_select": "Bind one matching resource to this principal; returns selection_id. "
-    "target_url is an optional ranking hint only. Use before `passbolt_use_secret`. Metadata only.",
-    "passbolt_use_secret": "Deliver a selected secret to one registered sink (secure_fill/out_file/"
-    "https_probe), using the record URI as the target. Optional job_ref for pg/ssh jobs. "
-    "The secret never enters the chat. Requires passbolt:use.",
+    "passbolt_select": "Bind exactly one record and return its decrypted note plus selection_id. Use "
+    "resource_id for a known record, or filters (target_url/query/username). Several matches return "
+    "ambiguous: true with candidates and bind nothing. Never returns the password or secret note.",
+    "passbolt_use_secret": "Deliver a selected secret to one registered sink from the record URI. "
+    "page=<marker> picks the browser tab carrying ?pb=<marker> when several tabs share a site; it "
+    "never changes the target. Returns status/url/account. Requires passbolt:use.",
     "passbolt_create_resource": "Create a v5 resource with a server_generated or sealed_ref secret (no "
     "plaintext input). Use for onboarding. Writes: idempotent, within policy.",
     "passbolt_update_resource": "Update a resource (approval-gated, optimistic concurrency). First call "

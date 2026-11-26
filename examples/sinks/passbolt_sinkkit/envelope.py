@@ -14,8 +14,21 @@ from urllib.parse import urlsplit
 from passbolt_sinkkit.errors import InputError, TargetError
 
 DATABASE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_$.-]{0,62}")
+PAGE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 MAX_HOST = 253
 MAX_PATH = 2_048
+
+
+def page_marker(envelope: Any) -> str | None:
+    """Non-secret tab marker; it selects a browser tab, never the target host."""
+    if not isinstance(envelope, dict):
+        return None
+    value = envelope.get("page")
+    if value is None:
+        return None
+    if not isinstance(value, str) or PAGE_RE.fullmatch(value) is None:
+        raise InputError("page marker is invalid")
+    return value
 
 
 def credentials(envelope: Any) -> tuple[str, str]:

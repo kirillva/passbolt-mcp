@@ -18,7 +18,7 @@ Try asking your assistant:
 
 | Your task | What the MCP server provides |
 |---|---|
-| Find an account | Search entry metadata and select an entry for a specific URL. Results show the entry type (for example `v5-default` or the Passbolt 5.12 `v5-pin-code`), never its secret. |
+| Find an account | Search by URL, name and username (filters combine with AND; URL alone lists every account on a site), then bind one entry: the tool returns its decrypted note and a `selection_id`. Several matches are reported as `ambiguous` with candidates instead of a silent pick. Results show the entry type (`v5-default`, `v5-pin-code`), never its secret. |
 | Keep the vault organised | Create and update entries, create folders and manage sharing within your access policy. |
 | Use a secret in an automation | Deliver a selected secret to a registered server-side handler, with a status result returned to the assistant. |
 | Check a protected endpoint | Use the built-in HTTPS probe with a selected vault credential; receive the outcome without the password or response body. |
@@ -29,7 +29,8 @@ The [protected endpoint walkthrough](docs/SECRET_PROBE.md) includes private conf
 ## Why this MCP
 
 - Optional lazy tool loading: set `PASSBOLT_TOOL_LOADING=lazy` (or choose it in the setup wizard) to start with a small core and enable toolsets on demand; see [Lazy tool loading](#lazy-tool-loading).
-- No tool returns a password: secrets go only to operator-registered sinks (secure fill, file, HTTPS probe) and the assistant receives a status.
+- No tool returns a password: secrets go only to operator-registered sinks (secure fill, file, HTTPS probe) and the assistant receives a status plus the resulting URL and account name.
+- Several accounts on one site: tabs are distinguished by a non-secret URL marker (`?pb=<marker>`) passed to `passbolt_use_secret` as `page`; the marker never changes the target and is bound into the approval digest.
 - Toolsets (meta, read, use, write); `PASSBOLT_READ_ONLY=1` keeps metadata reads only; sharing follows an access policy.
 - Local `passbolt-mcp-doctor` checks keys and policy before connecting; supports Passbolt v5 resource types.
 - Other Passbolt MCP on GitHub ([mapix-etnc/passbolt-mcp-server](https://github.com/mapix-etnc/passbolt-mcp-server), AGPL) has no CI; [bitwarden/mcp-server](https://github.com/bitwarden/mcp-server) is the official option for Bitwarden, not Passbolt.

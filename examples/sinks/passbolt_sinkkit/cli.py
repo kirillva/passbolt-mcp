@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from passbolt_sinkkit.envelope import credentials, parse_target
+from passbolt_sinkkit.envelope import credentials, page_marker, parse_target
 from passbolt_sinkkit.errors import SinkError
 from passbolt_sinkkit.executors import pg as pg_executor
 from passbolt_sinkkit.executors import ssh as ssh_executor
@@ -76,14 +76,17 @@ def main(protocol: str | None = None, argv: list[str] | None = None) -> int:
         result.update(host=target["host"], port=target["port"])
         values = _values(envelope, username, password)
         if protocol == "web":
+            marker = page_marker(envelope)
             document = web_guard.load_profiles(args.web_profiles)
             plan = web_guard.build_plan(document, target)
+            lock_name = f".browser-{marker}.lock" if marker else ".browser.lock"
             payload = web_executor.run(
                 target,
                 plan,
                 values,
                 cdp_url=args.cdp,
-                lock_path=workdir / ".browser.lock",
+                lock_path=workdir / lock_name,
+                page=marker,
             )
             result.update(**payload)
             return 0
@@ -123,6 +126,13 @@ def main(protocol: str | None = None, argv: list[str] | None = None) -> int:
         return 9
     finally:
         result.write()
+        # One line for the server: outcome only, never a secret or a full row set.
+        printable = {
+            key: result.payload[key]
+            for key in ("status", "sink", "url", "account", "page", "host", "port", "error", "detail")
+            if result.payload.get(key) is not None
+        }
+        print(json.dumps(printable, ensure_ascii=False))
 
 
 if __name__ == "__main__":

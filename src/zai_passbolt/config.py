@@ -29,6 +29,7 @@ class ServiceConfig:
     passbolt_use_enabled: bool = False
     passbolt_selection_ttl_seconds: int = 600
     enabled: bool = True
+    # Requests per sliding 60s window; 0 disables the local quota (cooldown still applies).
     rate_limit: int = 10
     max_concurrency: int = 1
     # Operator opt-in: metadata-only vault reads skip the sliding per-minute request quota.
@@ -42,8 +43,13 @@ class ServiceConfig:
             raise ValueError("bounded identity fields required")
         if not self.local_scopes <= SCOPES:
             raise ValueError("unknown scope")
+        if (
+            isinstance(self.rate_limit, bool)
+            or not isinstance(self.rate_limit, int)
+            or not 0 <= self.rate_limit <= 10
+        ):
+            raise ValueError("policy exceeds original default ceiling")
         for value, minimum, maximum in (
-            (self.rate_limit, 1, 10),
             (self.max_concurrency, 1, 1),
             (self.passbolt_selection_ttl_seconds, 60, 600),
         ):

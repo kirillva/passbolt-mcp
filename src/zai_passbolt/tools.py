@@ -10,7 +10,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from zai_passbolt import update_check
-from zai_passbolt.adapter import PassboltAccessPolicy, PassboltAdapter
+from zai_passbolt.adapter import PassboltAccessPolicy, PassboltAdapter, validate_page_marker
 from zai_passbolt.elicitation import confirm_share, share_summary
 from zai_passbolt.transport import (
     LocalPreDispatchDenied,
@@ -505,7 +505,7 @@ def register_tools(server: Any, runtime: Any) -> None:
             result = {"provider_enabled": False, "auth_ready": False, "decrypt_ready": False}
             await _passbolt_audit("passbolt:read", "status", "disabled")
             return result
-        adapter, _policy, _resources, _folders, _vault_profile = await _passbolt_access_policy()
+        adapter, policy, _resources, _folders, _vault_profile = await _passbolt_access_policy()
 
         async def probe() -> dict[str, Any]:
             value = adapter.status()
@@ -517,6 +517,11 @@ def register_tools(server: Any, runtime: Any) -> None:
             await _passbolt_audit("passbolt:read", "status", "error")
             raise
         result["provider_enabled"] = True
+        # Discoverability only: names/kinds/policies, never commands or paths.
+        summary = getattr(adapter, "sink_summary", None)
+        result["sinks"] = summary() if callable(summary) else []
+        result["sink_refs"] = sorted(getattr(policy, "sink_refs", frozenset()))
+        result["domain_hosts"] = sorted(getattr(policy, "domain_hosts", frozenset()))
         # Cache-only hint: the status probe never contacts GitHub.
         known = update_check.cached_status(update_cache_path(settings))
         if known and known["update_available"]:
@@ -537,17 +542,29 @@ def register_tools(server: Any, runtime: Any) -> None:
         return await update_check.check_for_update(update_cache_path(settings), force=force)
 
     @server.tool(auth=require_scopes("passbolt:read"), annotations=VAULT_READ_ONLY)
-    async def passbolt_search(query: str, target_url: str | None = None, limit: int = 20) -> dict[str, Any]:
-        """Search only v5 metadata decrypted inside server custody."""
+    async def passbolt_search(
+        query: str = "",
+        target_url: str | None = None,
+        username: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Search decrypted v5 metadata by name, URI and username.
+
+        Any combination of ``query`` (substring over name/URI/username), ``target_url``
+        (hard origin filter) and ``username`` (substring) is allowed; at least one is
+        required. With ``target_url`` alone it lists every account on that site.
+        """
         adapter, _policy, resources, _folders, _vault_profile = await _passbolt_access_policy()
-        PassboltAdapter.validate_search(query, target_url, limit)
+        PassboltAdapter.validate_search(query, target_url, limit, username)
         try:
             result = await _provider_read(
                 "passbolt",
                 "search",
-                {"query": query, "target_url": target_url, "limit": limit},
-                lambda: adapter.search(query, target_url, limit, allowed_resource_ids=resources),
-                validate=lambda: PassboltAdapter.validate_search(query, target_url, limit),
+                {"query": query, "target_url": target_url, "username": username, "limit": limit},
+                lambda: adapter.search(
+                    query, target_url, limit, username=username, allowed_resource_ids=resources
+                ),
+                validate=lambda: PassboltAdapter.validate_search(query, target_url, limit, username),
             )
         except Exception:
             await _passbolt_audit("passbolt:read", "search", "error")
@@ -599,19 +616,45 @@ def register_tools(server: Any, runtime: Any) -> None:
 
     @server.tool(auth=require_scopes("passbolt:read"), annotations=VAULT_SELECT)
     async def passbolt_select(
-        target_url: str | None = None, query: str = "", limit: int = 10
+        target_url: str | None = None,
+        query: str = "",
+        limit: int = 10,
+        username: str | None = None,
+        resource_id: str | None = None,
     ) -> dict[str, Any]:
-        """Bind a safe metadata selection to this principal. The target is taken from the record URI."""
+        """Bind exactly one record and reveal its decrypted note.
+
+        Pass ``resource_id`` to pick a known record, or filters (``target_url``,
+        ``query``, ``username``). If several records match, nothing is bound:
+        the answer carries ``ambiguous: true`` and ``candidates`` to choose from.
+        The note (v5 description) is returned for the bound record only; the
+        password, TOTP and secret note are never returned.
+        """
         adapter, _policy, resources, _folders, vault_profile = await _passbolt_access_policy()
         normalized_target = (
-            PassboltAdapter.validate_select(target_url, query, limit)[0] if target_url is not None else ""
+            PassboltAdapter.validate_select(target_url, query, limit, username)[0]
+            if target_url is not None
+            else ""
         )
         try:
             result = await _provider_read(
                 "passbolt",
                 "select",
-                {"target_url": target_url, "query": query, "limit": limit},
-                lambda: adapter.select(target_url, query, limit, allowed_resource_ids=resources),
+                {
+                    "target_url": target_url,
+                    "query": query,
+                    "username": username,
+                    "resource_id": resource_id,
+                    "limit": limit,
+                },
+                lambda: adapter.select(
+                    target_url,
+                    query,
+                    limit,
+                    username=username,
+                    resource_id=resource_id,
+                    allowed_resource_ids=resources,
+                ),
                 validate=lambda: None,
             )
             resource = result.get("resource")
@@ -639,6 +682,9 @@ def register_tools(server: Any, runtime: Any) -> None:
                 "domain_match": bool(result.get("domain_match")),
                 "confirmation_required": False,
                 "selection_id": selection_id,
+                "ambiguous": bool(result.get("ambiguous")),
+                "candidates": result.get("candidates") or [],
+                "secret_disclosed": False,
             }
         except Exception:
             await _passbolt_audit("passbolt:read", "select", "error")
@@ -1174,15 +1220,21 @@ def register_tools(server: Any, runtime: Any) -> None:
         job_ref: str | None = None,
         approval_id: str | None = None,
         target_url: str | None = None,
+        page: str | None = None,
     ) -> dict[str, Any]:
         """Deliver a selected secret to one sink, using the URI stored in the Passbolt record.
 
         ``target_url`` is accepted for compatibility and ignored: host, port and path
         always come from the resource URI, so a caller cannot redirect the credential.
+
+        ``page`` is a non-secret tab marker (``[a-z0-9._-]``, up to 32 chars) used by
+        browser sinks to pick exactly one tab when several are open on the same site.
+        It never changes the host, port or path, and it is bound into the approval digest.
         """
         if not settings.passbolt_use_enabled:
             await _passbolt_audit("passbolt:use", "use_secret", "disabled", sink_ref=sink_ref)
             raise PermissionError("Passbolt secret-use runtime is not enabled")
+        page = validate_page_marker(page)
         access = current_access()
         adapter, policy, resources, _folders, vault_profile = await _passbolt_access_policy()
         if sink_ref not in policy.sink_refs:
@@ -1255,6 +1307,7 @@ def register_tools(server: Any, runtime: Any) -> None:
                 "target_uri": target["uri"],
                 "sink_ref": sink_ref,
                 "job_sha256": job_sha256,
+                "page": page,
             }
         )
         if approval_mode == "always":
@@ -1311,6 +1364,7 @@ def register_tools(server: Any, runtime: Any) -> None:
                 target=target,
                 job=job_payload,
                 job_sha256=job_sha256,
+                page=page,
             )
 
         try:
@@ -1347,4 +1401,8 @@ def register_tools(server: Any, runtime: Any) -> None:
             target_host=target["host"],
             target_port=target["port"],
         )
-        return {"delivered_to_sink": bool(result.get("delivered_to_sink"))}
+        public: dict[str, Any] = {"delivered_to_sink": bool(result.get("delivered_to_sink"))}
+        for key in ("status", "url", "account", "page", "sink", "error"):
+            if key in result:
+                public[key] = result[key]
+        return public

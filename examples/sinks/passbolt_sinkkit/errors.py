@@ -50,6 +50,11 @@ class RemoteFailure(SinkError):
     exit_code = 8
 
 
+class AccountMismatch(SinkError):
+    status = "account_mismatch"
+    exit_code = 8
+
+
 EXIT_CODES = {
     "ok": 0,
     "logged_in": 0,
@@ -61,6 +66,7 @@ EXIT_CODES = {
     "mfa_required": 6,
     "denied": 7,
     "remote_error": 8,
+    "account_mismatch": 8,
     "error": 9,
 }
 

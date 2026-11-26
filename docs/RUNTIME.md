@@ -36,7 +36,7 @@ JWT должен иметь точные `iss`, `aud`, действующий `e
 | `PASSBOLT_MCP_ISSUER` / `PASSBOLT_MCP_AUDIENCE` | `passbolt-operator` / `passbolt-mcp` |
 | `PASSBOLT_WRITE_ENABLED` / `PASSBOLT_USE_ENABLED` | Оба `false`; включаются оператором отдельно |
 | `PASSBOLT_ENABLED` | `true` |
-| `PASSBOLT_RATE_LIMIT` | До 10 сетевых попыток в минуту на vault, по умолчанию 10 |
+| `PASSBOLT_RATE_LIMIT` | До 10 сетевых попыток в минуту на vault, по умолчанию 10; `0` полностью выключает локальное окно (кулдаун после 429/таймаута остаётся) |
 | `PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY` | `false`; `true` выводит чтение метаданных (`passbolt_search`, `passbolt_directory`, `passbolt_list_folders`, `passbolt_status`) из окна в 60 с. Кулдаун после ответа 429/таймаута и одиночный in-flight запрос остаются |
 | `PASSBOLT_SELECTION_TTL` | 60–600 секунд, по умолчанию 600 |
 | `PASSBOLT_DISABLE_UPDATE_CHECK` | `1` отключает проверку обновлений и любые запросы к GitHub; по умолчанию проверка включена |

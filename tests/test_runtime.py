@@ -326,7 +326,15 @@ def test_custody_change_cannot_reuse_ledger(config):
         harness(replace(config, bindings={"alice": "different"}))
 
 
-@pytest.mark.parametrize("args", [dict(rate_limit=11), dict(max_concurrency=2), dict(local_scopes={"admin"})])
+@pytest.mark.parametrize(
+    "args",
+    [
+        dict(rate_limit=11),
+        dict(rate_limit=-1),
+        dict(max_concurrency=2),
+        dict(local_scopes={"admin"}),
+    ],
+)
 def test_policy_cannot_exceed_default_ceiling(config, args):
     with pytest.raises(ValueError):
         replace(config, **args)

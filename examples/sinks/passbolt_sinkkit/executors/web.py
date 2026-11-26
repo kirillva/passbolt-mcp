@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from passbolt_sinkkit.errors import (
+    AccountMismatch,
     FormError,
     InputError,
     MfaRequired,
@@ -218,6 +219,32 @@ def _expect(cdp: Cdp, step: dict) -> None:
     raise SinkTimeout("expected page state did not arrive")
 
 
+def _verify_account(cdp: Cdp, verify: dict, values: dict[str, str | None]) -> str:
+    """Read a sessionStorage key after login and compare it to the credential."""
+    key = json.dumps(verify["session_storage"])
+    raw = cdp.evaluate(
+        "(() => { try { return sessionStorage.getItem(" + key + "); }"
+        " catch (e) { return null; } })()"
+    )
+    if not isinstance(raw, str) or not raw:
+        raise AccountMismatch("account marker is unavailable after login")
+    expected = values.get(verify["equals_ref"])
+    if isinstance(expected, str) and expected and raw != expected:
+        raise AccountMismatch("logged-in account does not match the credential")
+    return raw
+
+
+def _finish(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
+    state = _state(cdp)
+    if state.get("alert"):
+        raise RemoteFailure(str(state["alert"]))
+    result: dict = {"status": "logged_in", "url": state.get("url")}
+    verify = plan.get("verify")
+    if isinstance(verify, dict):
+        result["account"] = _verify_account(cdp, verify, values)
+    return result
+
+
 def _run_steps(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
     for step in plan["steps"]:
         action = step["action"]
@@ -242,13 +269,10 @@ def _run_steps(cdp: Cdp, plan: dict, values: dict[str, str | None]) -> dict:
             _wait_visible(cdp, step["selector"], step["timeout_ms"])
         elif action == "expect":
             _expect(cdp, step)
-    state = _state(cdp)
-    if state.get("alert"):
-        raise RemoteFailure(str(state["alert"]))
-    return {"status": "logged_in", "url": state.get("url")}
+    return _finish(cdp, plan, values)
 
 
-def _run_heuristic(cdp: Cdp, values: dict[str, str | None]) -> dict:
+def _run_heuristic(cdp: Cdp, values: dict[str, str | None], plan: dict | None = None) -> dict:
     raw = cdp.evaluate(COORDS_JS)
     if not isinstance(raw, str) or raw.startswith("no-"):
         raise FormError(raw if isinstance(raw, str) else "login form is not found")
@@ -277,7 +301,9 @@ def _run_heuristic(cdp: Cdp, values: dict[str, str | None]) -> dict:
         if state.get("alert"):
             raise RemoteFailure(str(state["alert"]))
         if state.get("url") != start_url or state.get("pwLeft") == 0:
-            return {"status": "logged_in", "start_url": start_url, "url": state.get("url")}
+            result = _finish(cdp, plan or {}, values)
+            result["start_url"] = start_url
+            return result
     raise SinkTimeout("login did not complete")
 
 
@@ -288,6 +314,7 @@ def run(
     *,
     cdp_url: str = DEFAULT_CDP,
     lock_path: Path | None = None,
+    page: str | None = None,
 ) -> dict[str, Any]:
     import websockets.sync.client as ws_client
 
@@ -301,15 +328,15 @@ def run(
             targets = json.load(response)
         if not isinstance(targets, list):
             raise SinkError("CDP target list is invalid")
-        page = pick_page(targets, target)
-        if page is None:
-            raise TargetError("exactly one matching browser tab is required")
-        with ws_client.connect(page["webSocketDebuggerUrl"], max_size=8 * 1024 * 1024) as socket:
+        selected = pick_page(targets, target, page)
+        if selected is None:
+            raise TargetError(f"no browser tab matches {target['host']}:{target['port']}")
+        with ws_client.connect(selected["webSocketDebuggerUrl"], max_size=8 * 1024 * 1024) as socket:
             cdp = Cdp(socket)
             cdp.call("Runtime.enable")
             if plan.get("mode") == "profile":
                 return _run_steps(cdp, plan, values)
-            return _run_heuristic(cdp, values)
+            return _run_heuristic(cdp, values, plan)
     except urllib.error.URLError as exc:
         raise SinkError("CDP endpoint is unavailable") from exc
     finally:

@@ -149,3 +149,12 @@ async def test_arbitrary_factory_admission_error_cannot_claim_no_dispatch(config
         await call("passbolt_update_resource", **args, approval_id=approval)
     record = await runtime.store.provider_write_lookup("alice", "passbolt", "u1")
     assert record["status"] == "pending"
+
+
+async def test_zero_rate_limit_disables_the_window_but_keeps_the_cooldown(config):
+    runtime, _call = harness(replace(config, rate_limit=0), FixtureAdapter())
+    for _ in range(50):
+        runtime.store.admit("alice")
+    runtime.store.cooldown("alice", 60)
+    with pytest.raises(ProviderAdmissionDenied):
+        runtime.store.admit("alice")

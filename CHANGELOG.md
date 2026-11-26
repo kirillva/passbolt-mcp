@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Search and selection: `passbolt_search` filters by `query` (name/URI/username, matched per field),
+  `target_url` (origin) and `username`; filters combine with AND and `target_url` alone lists every
+  account on a site. `passbolt_select` accepts `resource_id`/`username`, returns the bound record's
+  decrypted note (`note`, `note_available`) and never binds silently: several matches return
+  `ambiguous: true` with `candidates`.
+- Browser sinks: `passbolt_use_secret(page=<marker>)` selects the tab whose URL carries
+  `?pb=<marker>`; the marker never changes the target, is bound into the approval digest, and uses a
+  per-marker lock. Ambiguity is a structured `no_target` error instead of a guess, and web profiles
+  may declare `verify.session_storage` to return the logged-in `account` (or `account_mismatch`).
+- `passbolt_use_secret` returns the sink outcome (`status`, `url`, `account`, `page`, `error`,
+  `detail`) instead of only a boolean; sinks print one JSON line with the outcome.
+- `passbolt_status` exposes registered `sinks` (ref/kind/approval) plus the allowed `sink_refs` and
+  `domain_hosts`, so callers never inspect the operator's `secrets/` directory.
+- `PASSBOLT_RATE_LIMIT=0` disables the local sliding 60-second request window entirely. The window is
+  an MCP-side guard (10 requests/min per vault by default), not a Passbolt server limit; the cooldown
+  after a real 429/timeout/transport failure and the single in-flight lease still apply.
 - `PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY` (default `false`): operator opt-in that frees metadata-only
   vault reads (`passbolt_search`, `passbolt_directory`, `passbolt_list_folders`, `passbolt_status`) from
   the sliding 60-second request quota. The provider-failure cooldown (HTTP 429, timeout, transport
