@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.2
+
+- The android sink no longer requires the field to read back the exact typed text: a password
+  field answers with its mask ("••••") and some apps change the login case, so the strict compare
+  turned a successful fill into `form_error`. An empty readback is still a failure; the value is
+  never compared or logged.
+
 ## 0.10.1
 
 - Fix the android sink protocol wiring: `DEFAULT_DATABASES` had no `android` entry, so every

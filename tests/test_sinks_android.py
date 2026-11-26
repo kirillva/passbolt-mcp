@@ -101,6 +101,8 @@ class FakeObject:
         self._typed = value
 
     def get_text(self) -> str:
+        if getattr(self.device, "mask_get_text", False):
+            return "•" * len(self._typed)
         return self._typed
 
     def click(self) -> None:
@@ -118,6 +120,7 @@ class FakeDevice:
         self.typed: list[tuple[str, dict[str, Any], str]] = []
         self.clicks: list[dict[str, Any]] = []
         self.pressed: list[str] = []
+        self.mask_get_text = False
 
     def app_current(self) -> dict[str, Any]:
         return {"package": self.package, "activity": ".SecurityActivity"}
@@ -275,3 +278,14 @@ def test_heuristic_fills_the_two_fields_and_presses_the_button(monkeypatch: pyte
 def test_the_android_protocol_is_wired_into_the_cli() -> None:
     assert PROTOCOLS["android"] == "android_fill"
     assert DEFAULT_DATABASES["android"] is None
+
+
+def test_a_masked_password_readback_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Android answers a password field with dots; that must not fail the fill."""
+    device = FakeDevice([LOGIN_SCREEN], on_click=lambda dev: dev.screens.__setitem__(0, HOME_SCREEN))
+    device.mask_get_text = True
+    _fake_u2(monkeypatch, device)
+
+    result = android_exec.run(TARGET, "operator", "s3cret", PROFILE_PLAN)
+
+    assert result["status"] == "logged_in"

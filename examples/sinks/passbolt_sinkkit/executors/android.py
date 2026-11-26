@@ -119,8 +119,10 @@ def _fill(device, selector: dict[str, str], value: str, timeout_ms: int) -> None
         typed = target.get_text()
     except Exception:  # noqa: BLE001 - readback is best effort
         typed = None
-    if isinstance(typed, str) and typed and typed != value:
-        raise FormError("android field did not keep the typed value")
+    # A password field answers with its mask ("•••") and some apps transform the login case, so
+    # only an *empty* readback means the text never landed. The value itself is never compared.
+    if isinstance(typed, str) and not typed:
+        raise FormError("android field did not accept the typed text")
 
 
 def _click(device, selector: dict[str, str], timeout_ms: int) -> None:
