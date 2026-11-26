@@ -62,7 +62,11 @@ RESOURCE_TYPE_SLUGS = {
 # Existing v5 metadata may carry up to 32 uris; v5-pin-code (5.12+) has none.
 MAX_READ_URIS = 32
 # Resource types update_resource can rewrite without changing their type. Any other type fails closed.
-UPDATABLE_RESOURCE_TYPE_IDS = frozenset({V5_DEFAULT_RESOURCE_TYPE_ID, V5_PIN_CODE_RESOURCE_TYPE_ID})
+V5_PASSWORD_STRING_RESOURCE_TYPE_ID = "669f8c64-242a-59fb-92fc-81f660975fd3"
+# v5 metadata shapes this server can rewrite losslessly (same name/username/uris/description envelope).
+UPDATABLE_RESOURCE_TYPE_IDS = frozenset(
+    {V5_DEFAULT_RESOURCE_TYPE_ID, V5_PIN_CODE_RESOURCE_TYPE_ID, V5_PASSWORD_STRING_RESOURCE_TYPE_ID}
+)
 # v5-pin-code metadata properties per passbolt_api SlugDefinition::v5PinCode(): name, description, icon.
 PIN_CODE_UPDATE_FIELDS = frozenset({"name", "description"})
 _PIN_CODE_METADATA_KEYS = frozenset({"object_type", "resource_type_id", "name", "description", "icon"})
@@ -908,7 +912,9 @@ def _only_schema_keys(payload: Mapping[str, Any], allowed: frozenset[str]) -> bo
     return not any(value not in (None, "", []) for key, value in payload.items() if key not in allowed)
 
 
-def preserved_v5_default_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+def preserved_v5_default_metadata(
+    payload: Mapping[str, Any], *, resource_type_id: str = V5_DEFAULT_RESOURCE_TYPE_ID
+) -> dict[str, Any]:
     """Validate existing v5-default metadata for a lossless rewrite.
 
     Every uri (up to the documented 32), the icon and the metadata custom fields are kept
@@ -918,7 +924,7 @@ def preserved_v5_default_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
     error = "Passbolt v5-default metadata has fields outside its schema; update refused"
     if payload.get("object_type") != RESOURCE_METADATA_OBJECT_TYPE:
         raise ValueError("Passbolt v5 metadata object_type is invalid")
-    if str(payload.get("resource_type_id") or "").lower() != V5_DEFAULT_RESOURCE_TYPE_ID:
+    if str(payload.get("resource_type_id") or "").lower() != resource_type_id.lower():
         raise ValueError("Passbolt v5 metadata resource_type_id is invalid")
     if not _only_schema_keys(payload, _DEFAULT_METADATA_KEYS):
         raise ValueError(error)
@@ -937,7 +943,7 @@ def preserved_v5_default_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(error)
     result: dict[str, Any] = {
         "object_type": RESOURCE_METADATA_OBJECT_TYPE,
-        "resource_type_id": V5_DEFAULT_RESOURCE_TYPE_ID,
+        "resource_type_id": resource_type_id,
         "name": name,
         "username": username,
         "uris": list(uris),
@@ -2646,8 +2652,8 @@ class PassboltAdapter:
                 payload["uri"] = None
             else:
                 uri = _new_uri(str(value))
-                if len(uri) > 255:
-                    raise ValueError("uri must be at most 255 characters for a v4 resource")
+                if len(uri) > 1024:
+                    raise ValueError("uri must be at most 1024 characters")
                 payload["uri"] = uri
         # A partial PUT must not blank the fields it does not mention.
         for key in ("name", "username", "uri", "description"):
@@ -2711,7 +2717,7 @@ class PassboltAdapter:
         else:
             # Lossless rewrite: only the requested fields change; all uris, the icon and custom
             # fields are kept, and metadata outside the v5-default schema fails closed.
-            metadata = preserved_v5_default_metadata(decrypted)
+            metadata = preserved_v5_default_metadata(decrypted, resource_type_id=resource_type_id)
             if "name" in fields:
                 metadata["name"] = _text(fields["name"], "name", 255, required=True)
             if "username" in fields:

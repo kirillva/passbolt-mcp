@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2
+
+- `password-string` is updatable. Passbolt converts a v4 record to that v5 type when its metadata is
+  first written, and the update path then refused it ("supports only v5-default and v5-pin-code"),
+  which stranded the very record the migration had just touched. It shares the v5 metadata
+  envelope (name, username, uris, description, icon, custom fields), so it goes through the same
+  lossless rewrite with its own `resource_type_id` preserved. The v4 URI limit now follows the
+  published type definition (1024), not a guessed column width.
+
 ## 0.9.1
 
 - The v4 update sends no `secrets` field at all. Passbolt validates the secret list strictly on

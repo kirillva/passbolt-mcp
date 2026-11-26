@@ -10,6 +10,7 @@ from zai_passbolt.adapter import (
     RESOURCE_TYPE_SLUGS,
     V4_PASSWORD_DESCRIPTION_RESOURCE_TYPE_ID,
     V5_DEFAULT_RESOURCE_TYPE_ID,
+    V5_PASSWORD_STRING_RESOURCE_TYPE_ID,
     V5_PIN_CODE_RESOURCE_TYPE_ID,
     PassboltAdapter,
     preserved_v5_default_metadata,
@@ -639,10 +640,10 @@ async def test_v4_update_refuses_password_rotation_and_oversized_uris() -> None:
             fields={"secret_source": {"kind": "server_generated"}},
             expected_modified=MODIFIED,
         )
-    with pytest.raises(ValueError, match="255"):
+    with pytest.raises(ValueError, match="1024"):
         await adapter.update_resource(
             resource_id=V4_RESOURCE_ID,
-            fields={"uri": "https://example.com/" + "x" * 300},
+            fields={"uri": "https://example.com/" + "x" * 1100},
             expected_modified=MODIFIED,
         )
     with pytest.raises(PermissionError):
@@ -650,3 +651,26 @@ async def test_v4_update_refuses_password_rotation_and_oversized_uris() -> None:
             resource_id=V4_RESOURCE_ID, fields={"name": "x"}, expected_modified="stale"
         )
     assert adapter.requests == []
+
+
+async def test_password_string_update_keeps_its_type_and_writes_the_note() -> None:
+    """Passbolt migrated a v4 record to password-string; its metadata still carries the envelope."""
+    metadata = {
+        "object_type": "PASSBOLT_RESOURCE_METADATA",
+        "resource_type_id": V5_PASSWORD_STRING_RESOURCE_TYPE_ID,
+        "name": "dev-ws-v-07",
+        "username": "postgres",
+        "uris": ["postgresql://dev-ws-v-07:443/postgres"],
+        "description": None,
+        "custom_fields": [],
+    }
+    adapter = UpdateVaultAdapter(V5_PASSWORD_STRING_RESOURCE_TYPE_ID, metadata)
+    await adapter.update_resource(
+        resource_id=PIN_RESOURCE_ID,
+        fields={"description": "databases: postgres, app"},
+        expected_modified=MODIFIED,
+    )
+    [encrypted] = adapter.encrypted
+    assert encrypted["resource_type_id"] == V5_PASSWORD_STRING_RESOURCE_TYPE_ID
+    assert encrypted["description"] == "databases: postgres, app"
+    assert encrypted["uris"] == ["postgresql://dev-ws-v-07:443/postgres"]
