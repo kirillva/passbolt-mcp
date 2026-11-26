@@ -2502,7 +2502,8 @@ class PassboltAdapter:
         self._metadata_keys_loaded = True
         probe_step("metadata_key_select", "metadata_private_keys_unavailable")
         if not self._metadata_key_cache:
-            raise ProviderResponseError("Passbolt metadata private keys are unavailable")
+            # Custody, not a provider answer: nothing was sent, so the caller can fix and retry.
+            raise ProviderConfigurationError("Passbolt metadata private keys are unavailable")
 
     async def _metadata_key(self, key_id: str | None = None) -> dict[str, str]:
         await self._load_metadata_keys()

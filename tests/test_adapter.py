@@ -23,6 +23,7 @@ from zai_passbolt.adapter import (
 )
 from zai_passbolt.transport import (
     ProviderAuthenticationError,
+    ProviderConfigurationError,
     ProviderError,
     ProviderResponseError,
 )
@@ -151,7 +152,8 @@ async def test_encrypted_metadata_without_safe_fields_fails_closed() -> None:
         http=FakeHttp([{"id": "resource-1", "metadata": "encrypted"}]),
     )
 
-    with pytest.raises(ProviderResponseError, match="metadata private keys"):
+    # A custody gap is configuration, not a provider answer: the caller gets a hint it can act on.
+    with pytest.raises(ProviderConfigurationError, match="metadata private keys"):
         await adapter.search("Example")
 
 

@@ -20,6 +20,7 @@ from zai_passbolt.adapter import (
 from zai_passbolt.elicitation import confirm_share, share_summary
 from zai_passbolt.transport import (
     LocalPreDispatchDenied,
+    ProviderConfigurationError,
     ProviderError,
     ProviderHttpError,
     ProviderPreconditionFailed,
@@ -423,6 +424,20 @@ def register_tools(server: Any, runtime: Any) -> None:
                         key,
                         status="failed",
                         result={"error": "validation_failed"},
+                    )
+                raise
+            except ProviderConfigurationError:
+                # Local configuration (custody, an unusable record) fails before any mutating
+                # request; same reasoning as validation: definitive, never a pending digest.
+                if checkpoint_state is not None:
+                    await release_checkpoint()
+                else:
+                    await store.provider_write_settle(
+                        access.principal_id,
+                        "passbolt",
+                        key,
+                        status="failed",
+                        result={"error": "configuration_invalid"},
                     )
                 raise
             except ProviderHttpError as exc:

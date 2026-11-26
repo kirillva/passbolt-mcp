@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.7
+
+- A configuration failure during a write (missing metadata private keys, an unusable record) now
+  settles the attempt as `failed` instead of `pending`, and the custody error is raised as
+  `ProviderConfigurationError` with an actionable hint. Previously such a call left a pending
+  digest that blocked every retry with the same request as "pending reconciliation" — the trap we
+  hit twice while migrating the demo record. Post-dispatch unknowns still stay pending.
+
 ## 0.9.6
 
 - Fix the import that 0.9.5 missed: `runtime.py` referenced `ProviderError` without importing it,

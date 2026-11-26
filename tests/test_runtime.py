@@ -10,7 +10,12 @@ from zai_passbolt.adapter import DomainDecision, PassboltAccessPolicy, PassboltA
 from zai_passbolt.errors import SafeToolError
 from zai_passbolt.runtime import Runtime, StandaloneHttp
 from zai_passbolt.tools import register_tools
-from zai_passbolt.transport import ProviderAdmissionDenied, ProviderError, ProviderHttpError
+from zai_passbolt.transport import (
+    ProviderAdmissionDenied,
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderHttpError,
+)
 
 RESOURCE = "11111111-1111-4111-8111-111111111111"
 CREATE = dict(
@@ -405,6 +410,30 @@ async def test_a_local_validation_error_does_not_block_the_next_attempt(config):
 
     adapter.update_error = None
     retried = await call("passbolt_update_resource", **{**args, "idempotency_key": "u-retry"})
+    assert retried["updated"] is True
+
+
+async def test_a_configuration_failure_does_not_block_the_next_attempt(config):
+    """Custody/config errors are local: settle failed, not a digest-blocking pending write."""
+    adapter = FixtureAdapter()
+    adapter.domain_policy = "any"
+    adapter.update_error = ProviderConfigurationError(
+        "Passbolt metadata private keys are unavailable"
+    )
+    _, call = harness(replace(config, passbolt_write_approval="auto"), adapter)
+    args = dict(
+        resource_id=RESOURCE,
+        fields={"uri": "postgresql://db.example/app"},
+        expected_modified="v1",
+        idempotency_key="u-config",
+    )
+    with pytest.raises(SafeToolError) as error:
+        await call("passbolt_update_resource", **args)
+    assert error.value.error_code == "provider_configuration_invalid"
+    assert "metadata private keys" in str(error.value)
+
+    adapter.update_error = None
+    retried = await call("passbolt_update_resource", **{**args, "idempotency_key": "u-config-2"})
     assert retried["updated"] is True
 
 
