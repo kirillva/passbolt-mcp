@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+
+- The refusal check reads every visible dialog, not just the first. On a real stand the login
+  window itself is a dialog and appears earlier in the DOM than the message box above it, so
+  0.7.2 reported a refused credential as `unconfirmed` even though the site had said
+  "Неверный логин или пароль" out loud. `passbolt_use_secret` now returns `rejected` with the
+  site's own sentence in `detail`.
+
 ## 0.7.2
 
 - Browser sinks confirm a login instead of declaring one. After the steps the sink looks for
