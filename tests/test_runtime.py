@@ -472,7 +472,7 @@ async def test_create_uses_the_configured_v4_layout(config):
 def test_write_approval_defaults_to_operator_and_is_validated(config):
     assert config.passbolt_write_approval == "operator"
     assert config.passbolt_create_layout == "v5"
-    assert config.passbolt_failure_cooldown_seconds == 10
+    assert config.passbolt_failure_cooldown_seconds == 0
     with pytest.raises(ValueError, match="policy exceeds original default ceiling"):
         replace(config, passbolt_failure_cooldown_seconds=4_000)
     with pytest.raises(ValueError, match="PASSBOLT_WRITE_APPROVAL"):

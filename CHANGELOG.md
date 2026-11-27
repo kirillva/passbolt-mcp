@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.9
+
+- `PASSBOLT_FAILURE_COOLDOWN` now defaults to **0**: a provider timeout or transport failure no
+  longer blocks the next request at all. A 429 still keeps its `Retry-After`; set a non-zero value
+  to bring back the short self-backoff.
+
 ## 0.10.8
 
 - A provider timeout or transport failure cooled the whole vault down for 60 s, so every tool — even

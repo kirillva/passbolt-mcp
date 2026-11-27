@@ -183,15 +183,33 @@ async def test_reads_skip_the_cooldown_but_writes_do_not(config):
 async def test_a_timeout_cools_down_briefly_and_reads_stay_available(config):
     adapter = FixtureAdapter()
     adapter.search_error = ProviderTimeoutError("provider request timed out")
-    runtime, call = harness(replace(config, rate_limit_exempt_read_only=True), adapter)
+    runtime, call = harness(
+        replace(config, rate_limit_exempt_read_only=True, passbolt_failure_cooldown_seconds=10),
+        adapter,
+    )
     with pytest.raises(SafeToolError) as error:
         await call("passbolt_search", query="x")
     assert error.value.error_code == "provider_timeout"
 
     with runtime.store.connect() as db:
         until = db.execute("select until_time from cooldowns").fetchone()[0]
-    assert 0 < until - time.time() <= config.passbolt_failure_cooldown_seconds + 2
+    assert 0 < until - time.time() <= 12
 
     adapter.search_error = None
     result = await call("passbolt_search", query="x")
     assert result["resources"]
+
+
+async def test_a_timeout_sets_no_cooldown_by_default(config):
+    """Off by default: a slow request must not block the next one at all."""
+    adapter = FixtureAdapter()
+    adapter.search_error = ProviderTimeoutError("provider request timed out")
+    runtime, call = harness(config, adapter)
+    with pytest.raises(SafeToolError):
+        await call("passbolt_search", query="x")
+
+    with runtime.store.connect() as db:
+        assert db.execute("select count(*) from cooldowns").fetchone()[0] == 0
+
+    adapter.search_error = None
+    assert (await call("passbolt_search", query="x"))["resources"]

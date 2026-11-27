@@ -39,8 +39,9 @@ class ServiceConfig:
     # Requests per sliding 60s window; 0 disables the local quota (cooldown still applies).
     rate_limit: int = 10
     # Our own backoff after a provider timeout/transport failure (a 429 keeps the vault's own
-    # Retry-After). 0 disables it; metadata reads stay exempt when the operator lifted their quota.
-    passbolt_failure_cooldown_seconds: int = 10
+    # Retry-After). Off by default: a slow request must not block the next one. Metadata reads stay
+    # exempt when the operator lifted their quota.
+    passbolt_failure_cooldown_seconds: int = 0
     max_concurrency: int = 1
     # Operator opt-in: metadata-only vault reads skip the sliding per-minute request quota.
     rate_limit_exempt_read_only: bool = False
@@ -128,7 +129,7 @@ class ServiceConfig:
             passbolt_use_enabled=flag("PASSBOLT_USE_ENABLED"),
             enabled=flag("PASSBOLT_ENABLED", "true"),
             rate_limit=int(os.environ.get("PASSBOLT_RATE_LIMIT", "10")),
-            passbolt_failure_cooldown_seconds=int(os.environ.get("PASSBOLT_FAILURE_COOLDOWN", "10")),
+            passbolt_failure_cooldown_seconds=int(os.environ.get("PASSBOLT_FAILURE_COOLDOWN", "0")),
             rate_limit_exempt_read_only=flag("PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY"),
             passbolt_selection_ttl_seconds=int(os.environ.get("PASSBOLT_SELECTION_TTL", "600")),
         )
