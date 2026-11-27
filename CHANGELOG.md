@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.4
+
+- An android record may name only the package: `android://ru.itserv.skr` and `android://ru.itserv.skr/`
+  now match a profile that also pins an activity (the app decides which screen it shows), instead
+  of silently dropping to the heuristic. An activity in the URI still narrows the match.
+
 ## 0.10.3
 
 - The android sink decides by the login form, not by the app's wording: a successful sign-in

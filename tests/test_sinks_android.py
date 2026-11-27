@@ -289,3 +289,35 @@ def test_a_masked_password_readback_is_not_an_error(monkeypatch: pytest.MonkeyPa
     result = android_exec.run(TARGET, "operator", "s3cret", PROFILE_PLAN)
 
     assert result["status"] == "logged_in"
+
+
+@pytest.mark.parametrize("path", ["/", "", "/SecurityActivity"])
+def test_a_record_may_name_only_the_package(path: str) -> None:
+    """android://pkg, android://pkg/ and android://pkg/SecurityActivity all reach the profile."""
+    document = {
+        "profiles": {
+            "skr": {
+                "match": {"package": PACKAGE, "activity": "SecurityActivity"},
+                "steps": [
+                    {"action": "fill", "selector": {"resource_id": LOGIN_ID}, "value_ref": "username"}
+                ],
+            }
+        }
+    }
+    plan = android_guard.build_plan(document, {**TARGET, "path": path})
+    assert plan["mode"] == "profile"
+
+
+def test_a_different_activity_in_the_uri_falls_back_to_the_heuristic() -> None:
+    document = {
+        "profiles": {
+            "skr": {
+                "match": {"package": PACKAGE, "activity": "SecurityActivity"},
+                "steps": [
+                    {"action": "fill", "selector": {"resource_id": LOGIN_ID}, "value_ref": "username"}
+                ],
+            }
+        }
+    }
+    plan = android_guard.build_plan(document, {**TARGET, "path": "/OtherActivity"})
+    assert plan["mode"] == "heuristic"

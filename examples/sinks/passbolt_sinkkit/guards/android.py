@@ -145,9 +145,11 @@ def match_profile(profile: Any, package: str, activity: str | None) -> bool:
     if str(selector.get("package") or "").lower() != package:
         return False
     wanted_activity = selector.get("activity")
-    if wanted_activity is None:
+    if wanted_activity is None or activity is None:
+        # The record may name only the package (android://pkg or android://pkg/); the app decides
+        # which activity it shows. An activity in the URI narrows the match, it is not required.
         return True
-    return activity is not None and str(wanted_activity).strip(".").lower() == activity.strip(".").lower()
+    return str(wanted_activity).strip(".").lower() == activity.strip(".").lower()
 
 
 def build_plan(document: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:

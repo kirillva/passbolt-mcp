@@ -107,8 +107,9 @@ database = app
 
 ### android_fill — вход в Android-приложение
 
-URI записи: `android://<package>[/<Activity>]` (например `android://ru.itserv.skr/SecurityActivity`).
-Порт не используется (в target попадает 5037 — порт adb). Sink подключается к устройству через
+URI записи: `android://<package>` (достаточно пакета: `android://ru.itserv.skr` и
+`android://ru.itserv.skr/` — одно и то же); `android://<package>/<Activity>` сужает профиль, если
+в приложении несколько экранов входа. Порт не используется (в target попадает 5037 — порт adb). Sink подключается к устройству через
 uiautomator2 (`--device <serial>`, иначе `ANDROID_SERIAL`, иначе единственное подключённое) и
 работает только с приложением **на переднем плане**: если открыто другое — `no_target`,
 приложение нужно открыть заранее (агент это делает через playwright/uiautomator2 MCP).
