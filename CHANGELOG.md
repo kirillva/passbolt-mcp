@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- sinks: on Windows the server now passes the system environment roots (`SystemRoot`, `TEMP`, ...)
+  to a sink process. Without them Winsock fails (`WinError 10106`), so `android_fill`, `login_fill`
+  and the ssh sinks answered `no_target` / "device is unavailable" even when the target was ready.
+- doctor: the `job_dir` custody check no longer applies POSIX mode bits on Windows, where NTFS ACLs
+  carry custody; `sink_configuration` no longer reports `false` for a private directory.
+
 ## 0.11.0
 
 Windows support, without giving up the POSIX install:

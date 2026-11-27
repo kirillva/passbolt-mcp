@@ -108,6 +108,26 @@ def _not_group_writable(mode: int) -> bool:
     return os.name == "nt" or not bool(mode & (stat.S_IWGRP | stat.S_IWOTH))
 
 
+def _sink_environment() -> dict[str, str]:
+    """Environment for a sink process; Windows needs its system roots for sockets and temp files."""
+    environment = {"PATH": os.environ.get("PATH", ""), "LANG": "C.UTF-8"}
+    if os.name == "nt":
+        for key in (
+            "SystemRoot",
+            "SystemDrive",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "COMSPEC",
+        ):
+            value = os.environ.get(key)
+            if value:
+                environment[key] = value
+    return environment
+
+
 def _private_directory(path: Path | None) -> bool:
     if path is None or not path.is_absolute():
         return False
@@ -1372,7 +1392,7 @@ class PassboltSinkDispatcher:
                 stderr=subprocess.DEVNULL,
                 timeout=timeout,
                 check=False,
-                env={"PATH": os.environ.get("PATH", ""), "LANG": "C.UTF-8"},
+                env=_sink_environment(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ProviderError("Passbolt secure sink failed") from exc

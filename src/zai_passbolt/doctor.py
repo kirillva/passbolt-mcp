@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import stat
 from pathlib import Path
@@ -18,6 +19,11 @@ from zai_passbolt.profiles import Profiles
 _SINK_REFERENCE_FILES = ("known_hosts", "profiles_file", "sslrootcert")
 
 
+def _posix_mode_gate() -> bool:
+    """POSIX mode bits are meaningless on Windows, where NTFS ACLs carry custody."""
+    return os.name != "nt"
+
+
 def _local_sink_paths(item) -> tuple[str, bool]:
     """Validate sink paths without executing the sink or touching the network."""
     job_dir = item.get("job_dir")
@@ -27,7 +33,11 @@ def _local_sink_paths(item) -> tuple[str, bool]:
             info = directory.lstat()
         except OSError:
             return "configuration_path_unavailable", False
-        if directory.is_symlink() or not directory.is_dir() or info.st_mode & 0o077:
+        if (
+            directory.is_symlink()
+            or not directory.is_dir()
+            or (_posix_mode_gate() and info.st_mode & 0o077)
+        ):
             return "configuration_path_unavailable", False
     for key in _SINK_REFERENCE_FILES:
         value = item.get(key)
