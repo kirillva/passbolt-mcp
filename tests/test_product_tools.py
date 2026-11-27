@@ -162,3 +162,16 @@ async def test_local_doctor_works_without_keys_or_network_and_closes(config):
     assert not result["ready"] and result["checks"]["access_policy"]
     assert result["provider_connectivity"] == "not_checked"
     assert not config.state_path.exists()
+
+def test_doctor_skips_posix_mode_bits_for_job_dir_on_windows(tmp_path, monkeypatch):
+    from zai_passbolt import doctor
+
+    job_dir = tmp_path / "jobs"
+    job_dir.mkdir()
+    job_dir.chmod(0o755)
+    monkeypatch.setattr(doctor.os, "name", "nt")
+
+    status, valid = doctor._local_sink_paths({"job_dir": str(job_dir)})
+
+    assert valid
+    assert status == "registered_local_process_not_executed"

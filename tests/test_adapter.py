@@ -1339,3 +1339,17 @@ async def test_create_rejects_uri_longer_than_the_v5_schema_before_any_request()
             username="operator",
             secret_source={"kind": "server_generated"},
         )
+
+def test_sink_environment_keeps_windows_system_roots(monkeypatch):
+    from zai_passbolt import adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module.os, "name", "nt")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("TEMP", r"C:\Temp")
+
+    environment = adapter_module._sink_environment()
+
+    assert environment["SystemRoot"] == r"C:\Windows"
+    assert environment["TEMP"] == r"C:\Temp"
+    assert environment["LANG"] == "C.UTF-8"
+    assert environment["PATH"] == os.environ.get("PATH", "")
