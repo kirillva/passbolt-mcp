@@ -14,7 +14,7 @@ from zai_passbolt.runtime import (
     StandaloneHttp,
 )
 from zai_passbolt.tools import register_tools
-from zai_passbolt.transport import ProviderAdmissionDenied
+from zai_passbolt.transport import ProviderAdmissionDenied, ProviderTimeoutError
 
 
 async def test_proven_pre_dispatch_quota_denial_is_retryable_with_new_approval_and_key(config):
@@ -158,3 +158,40 @@ async def test_zero_rate_limit_disables_the_window_but_keeps_the_cooldown(config
     runtime.store.cooldown("alice", 60)
     with pytest.raises(ProviderAdmissionDenied):
         runtime.store.admit("alice")
+
+
+async def test_reads_skip_the_cooldown_but_writes_do_not(config):
+    """A timeout must not blind the agent: metadata reads stay available, writes wait."""
+    runtime, _ = harness(replace(config, rate_limit_exempt_read_only=True), FixtureAdapter())
+    runtime.store.cooldown("alice", 60, cause="backoff")
+
+    read = runtime.state.set(CallState("exec-read", "alice", "passbolt_search"))
+    try:
+        await StandaloneHttp(runtime)._admit_attempt(1)
+    finally:
+        runtime.state.reset(read)
+
+    write = runtime.state.set(CallState("exec-write", "alice", "passbolt_update_resource"))
+    try:
+        with pytest.raises(ProviderAdmissionDenied) as error:
+            await StandaloneHttp(runtime)._admit_attempt(1)
+    finally:
+        runtime.state.reset(write)
+    assert 0 < (error.value.retry_after_seconds or 0) <= 60
+
+
+async def test_a_timeout_cools_down_briefly_and_reads_stay_available(config):
+    adapter = FixtureAdapter()
+    adapter.search_error = ProviderTimeoutError("provider request timed out")
+    runtime, call = harness(replace(config, rate_limit_exempt_read_only=True), adapter)
+    with pytest.raises(SafeToolError) as error:
+        await call("passbolt_search", query="x")
+    assert error.value.error_code == "provider_timeout"
+
+    with runtime.store.connect() as db:
+        until = db.execute("select until_time from cooldowns").fetchone()[0]
+    assert 0 < until - time.time() <= config.passbolt_failure_cooldown_seconds + 2
+
+    adapter.search_error = None
+    result = await call("passbolt_search", query="x")
+    assert result["resources"]

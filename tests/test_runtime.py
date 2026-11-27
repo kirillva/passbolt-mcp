@@ -90,6 +90,7 @@ class FixtureAdapter:
         # "any" policy is what the fork ships by default now.
         self.domain_policy = "allowlist"
         self.update_error = None
+        self.search_error = None
 
     def access_policy(self, label):
         return PassboltAccessPolicy(
@@ -111,6 +112,8 @@ class FixtureAdapter:
 
     async def search(self, *args, **kwargs):
         self.calls.append(("search", args))
+        if self.search_error is not None:
+            raise self.search_error
         return {
             "resources": [{"resource_id": RESOURCE, "uri": self.record_uri}],
             "secret_disclosed": False,
@@ -469,6 +472,9 @@ async def test_create_uses_the_configured_v4_layout(config):
 def test_write_approval_defaults_to_operator_and_is_validated(config):
     assert config.passbolt_write_approval == "operator"
     assert config.passbolt_create_layout == "v5"
+    assert config.passbolt_failure_cooldown_seconds == 10
+    with pytest.raises(ValueError, match="policy exceeds original default ceiling"):
+        replace(config, passbolt_failure_cooldown_seconds=4_000)
     with pytest.raises(ValueError, match="PASSBOLT_WRITE_APPROVAL"):
         replace(config, passbolt_write_approval="sometimes")
     with pytest.raises(ValueError, match="PASSBOLT_CREATE_LAYOUT"):

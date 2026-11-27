@@ -76,8 +76,13 @@ class StandaloneHttp(JsonHttpClient):
 
     async def _admit_attempt(self, attempt):
         call = self.runtime.state.get()
+        counts = self._counts_toward_quota(call)
         try:
-            self.runtime.store.admit(call.principal_id, counts_toward_quota=self._counts_toward_quota(call))
+            self.runtime.store.admit(
+                call.principal_id,
+                counts_toward_quota=counts,
+                exempt_cooldown=not counts,
+            )
         except ProviderAdmissionDenied as exc:
             raise _DispatchAdmissionDenied(
                 "local HTTP admission denied", retry_after_seconds=exc.retry_after_seconds
@@ -241,7 +246,16 @@ class Runtime:
                 and isinstance(exc, (ProviderRateLimited, ProviderTimeoutError, ProviderTransportError))
                 and not isinstance(exc, ProviderAdmissionDenied)
             ):
-                self.store.cooldown(actor, getattr(exc, "retry_after_seconds", None) or 60)
+                if isinstance(exc, ProviderRateLimited):
+                    # The vault asked us to wait: honour its Retry-After.
+                    seconds = getattr(exc, "retry_after_seconds", None) or 60
+                    cause = "provider"
+                else:
+                    # Our own timeout/transport backoff, not a quota: keep it short.
+                    seconds = int(self.config.passbolt_failure_cooldown_seconds)
+                    cause = "backoff"
+                if seconds > 0:
+                    self.store.cooldown(actor, seconds, cause=cause)
             converted = safe_provider_error("passbolt", exc)
             self._log_failure(
                 tool,

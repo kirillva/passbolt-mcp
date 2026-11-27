@@ -66,8 +66,12 @@ class StateStore:
                 CREATE TABLE IF NOT EXISTS leases(account TEXT, execution TEXT, vault TEXT, expires REAL,
                     PRIMARY KEY(account,execution));
                 CREATE TABLE IF NOT EXISTS cooldowns(account TEXT, vault TEXT, until_time REAL,
-                    PRIMARY KEY(account,vault));
+                    cause TEXT, PRIMARY KEY(account,vault));
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(cooldowns)")}
+            if "cause" not in columns:
+                # Older state files predate the cause: a 429 and our own backoff must be told apart.
+                db.execute("ALTER TABLE cooldowns ADD COLUMN cause TEXT")
             db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT fingerprint FROM custody WHERE account=?", (self.account,)).fetchone()
             if old and old[0] != fingerprint:
@@ -298,23 +302,30 @@ class StateStore:
                 (self.account, execution, str(actor), tool, digest, now),
             )
 
-    def admit(self, actor, *, counts_toward_quota=True):
+    def admit(self, actor, *, counts_toward_quota=True, exempt_cooldown=False):
         """Admit one vault request.
 
-        The cooldown always applies: it is a provider 429, timeout or transport failure that
-        the vault asked us to respect. Only the sliding 60s request window can be skipped:
-        by operator-exempt metadata reads (ServiceConfig.rate_limit_exempt_read_only) or
-        for the whole process when ``rate_limit == 0``.
+        A cooldown follows a provider 429 or our own backoff after a timeout. Operator-exempt
+        metadata reads may skip only the backoff (``exempt_cooldown``): they are cheap, they are
+        how an agent re-reads state after a failure, and the operator explicitly lifted their
+        quota — while a 429 still binds, because the vault asked for it. The
+        sliding 60s window is skipped for those reads or for the whole process when
+        ``rate_limit == 0``.
         """
         vault = self.vault(actor)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             now = time.time()
             cooldown = db.execute(
-                "SELECT until_time FROM cooldowns WHERE account=? AND vault=?", (self.account, vault)
+                "SELECT until_time, cause FROM cooldowns WHERE account=? AND vault=?",
+                (self.account, vault),
             ).fetchone()
-            if cooldown and cooldown[0] > now:
-                raise ProviderAdmissionDenied("vault is cooling down", retry_after_seconds=60)
+            provider_asked = bool(cooldown) and str(cooldown[1] or "provider") == "provider"
+            if cooldown and cooldown[0] > now and not (exempt_cooldown and not provider_asked):
+                raise ProviderAdmissionDenied(
+                    "vault is cooling down",
+                    retry_after_seconds=max(1, int(cooldown[0] - now)),
+                )
             if not counts_toward_quota or self.config.rate_limit <= 0:
                 return
             count = db.execute(
@@ -325,12 +336,14 @@ class StateStore:
                 raise ProviderAdmissionDenied("vault request quota reached", retry_after_seconds=60)
             db.execute("INSERT INTO attempts VALUES(?,?,?)", (self.account, vault, now))
 
-    def cooldown(self, actor, seconds):
+    def cooldown(self, actor, seconds, *, cause="provider"):
+        """Remember a cooldown: "provider" for a 429, "backoff" for our own timeout."""
         with self.connect() as db:
             db.execute(
-                "INSERT INTO cooldowns VALUES(?,?,?) ON CONFLICT(account,vault) DO UPDATE "
-                "SET until_time=MAX(until_time,excluded.until_time)",
-                (self.account, self.vault(actor), time.time() + max(1, min(seconds, 3600))),
+                "INSERT INTO cooldowns(account,vault,until_time,cause) VALUES(?,?,?,?) "
+                "ON CONFLICT(account,vault) DO UPDATE SET "
+                "until_time=MAX(until_time,excluded.until_time), cause=excluded.cause",
+                (self.account, self.vault(actor), time.time() + max(1, min(seconds, 3600)), cause),
             )
 
     def finish(self, execution, outcome):

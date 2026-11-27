@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.8
+
+- A provider timeout or transport failure cooled the whole vault down for 60 s, so every tool — even
+  a metadata search — answered `provider_rate_limited` until it expired. Our own backoff is now
+  short and configurable (`PASSBOLT_FAILURE_COOLDOWN`, seconds, default 10, `0` disables), while a
+  provider 429 keeps its `Retry-After`. Operator-exempt metadata reads
+  (`PASSBOLT_RATE_LIMIT_EXEMPT_READ_ONLY`) skip our backoff — an agent can still re-read state after
+  a failure — but not a 429, because that one the vault asked for.
+- The cooldown error reports the real remaining seconds instead of a hardcoded 60.
+
 ## 0.10.7
 
 - android_fill checks for the login form before typing: if the app is already signed in (or shows
