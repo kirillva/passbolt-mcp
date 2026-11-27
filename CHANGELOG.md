@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.7
+
+- android_fill checks for the login form before typing: if the app is already signed in (or shows
+  another screen) it answers `form_error` with "login form is not visible" right away instead of
+  waiting out the whole classification as `timeout`. The window is `login_wait_ms` (0–15000, default
+  3000) per profile.
+- The heuristic resolves the two fields and the submit control first and only then types, so an
+  unrecognised screen is refused without putting a password into whatever widget comes first.
+
 ## 0.10.6
 
 - A policy may omit `sink_refs`; that now means **every registered sink** instead of "none". The

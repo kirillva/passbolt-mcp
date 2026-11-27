@@ -179,19 +179,24 @@ def _center(bounds: str) -> tuple[int, int] | None:
     return (x1 + x2) // 2, (y1 + y2) // 2
 
 
-def _run_heuristic(device, values: dict[str, str]) -> None:
-    """Profile-free fallback: two visible EditText fields plus a login button."""
-    nodes = _nodes(device)
+def _selector_for(node: dict[str, Any]) -> dict[str, str] | None:
+    if node["resource_id"]:
+        return {"resource_id": node["resource_id"]}
+    if node["text"]:
+        return {"text": node["text"]}
+    if node["description"]:
+        return {"description": node["description"]}
+    return None
+
+
+def _heuristic_form(nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve a two-field login form: a login field, a password field and a submit control."""
     edits = [n for n in nodes if n["class"].endswith("EditText") and n["enabled"]]
     passwords = [n for n in edits if n["password"]]
     if not passwords:
-        raise FormError("android login form is not visible (no password field)")
+        return None
     password = passwords[0]
-    before = [
-        n
-        for n in edits
-        if n is not password and nodes.index(n) < nodes.index(password)
-    ]
+    before = [n for n in edits if n is not password and nodes.index(n) < nodes.index(password)]
     login = before[-1] if before else None
     submit = next(
         (
@@ -204,28 +209,51 @@ def _run_heuristic(device, values: dict[str, str]) -> None:
         None,
     )
     if login is None or submit is None:
-        raise FormError("android login form is not recognised; add a profile for this app")
-
-    def selector(node: dict[str, Any]) -> dict[str, str] | None:
-        if node["resource_id"]:
-            return {"resource_id": node["resource_id"]}
-        if node["text"]:
-            return {"text": node["text"]}
         return None
+    return {
+        "login": _selector_for(login) or {"class_name": login["class"]},
+        "password": _selector_for(password) or {"class_name": password["class"]},
+        "submit": _selector_for(submit),
+        "submit_point": _center(submit["bounds"]),
+    }
 
-    login_selector = selector(login) or {"class_name": login["class"]}
-    password_selector = selector(password) or {"class_name": password["class"]}
-    _fill(device, login_selector, values["username"], 10_000)
-    _fill(device, password_selector, values["password"], 10_000)
-    submit_selector = selector(submit)
-    if submit_selector is not None:
-        _click(device, submit_selector, 10_000)
-    else:
-        point = _center(submit["bounds"])
-        if point is None:
-            raise FormError("android login button has no usable bounds")
-        device.click(*point)
-        time.sleep(0.3)
+
+def _run_heuristic(device, values: dict[str, str]) -> None:
+    form = _heuristic_form(_nodes(device))
+    if form is None:
+        raise FormError("android login form is not recognised; add a profile for this app")
+    _fill(device, form["login"], values["username"], 10_000)
+    _fill(device, form["password"], values["password"], 10_000)
+    if form["submit"] is not None:
+        _click(device, form["submit"], 10_000)
+        return
+    if form["submit_point"] is None:
+        raise FormError("android login button has no usable bounds")
+    device.click(*form["submit_point"])
+    time.sleep(0.3)
+
+
+def _first_fill_selector(plan: dict[str, Any]) -> dict[str, str] | None:
+    for step in plan["steps"]:
+        if step["action"] == "fill":
+            return step["selector"]
+    return None
+
+
+def _login_form_ready(device, plan: dict[str, Any], wait_ms: int) -> bool:
+    """Wait a short, bounded time for the login form; an absent form is a final answer."""
+    deadline = time.monotonic() + wait_ms / 1000
+    while True:
+        if plan["mode"] == "profile":
+            selector = _first_fill_selector(plan)
+            ready = True if selector is None else bool(_obj(device, selector).exists)
+        else:
+            ready = _heuristic_form(_nodes(device)) is not None
+        if ready:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECONDS)
 
 
 def _classify(device, plan: dict[str, Any]) -> dict[str, Any]:
@@ -299,6 +327,11 @@ def run(
         raise TargetError(
             f"target app {plan['package']} is not in the foreground; open it before delivering"
         )
+    wait_ms = int(plan.get("login_wait_ms") or 0)
+    if not _login_form_ready(connection, plan, wait_ms):
+        # The app is in the foreground but shows no login form: already signed in, or a different
+        # screen. Waiting the full classification timeout there would only waste ~20 s.
+        raise FormError("login form is not visible; the app may already be signed in")
     values = {"username": username, "password": password}
     if plan["mode"] == "profile":
         _run_steps(connection, plan, values)

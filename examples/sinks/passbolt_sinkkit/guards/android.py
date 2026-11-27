@@ -22,6 +22,9 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 DEFAULT_TIMEOUT_MS = 15_000
 MIN_TIMEOUT_MS = 500
 MAX_TIMEOUT_MS = 60_000
+# How long to wait for the login form itself before declaring the app is not on a login screen.
+DEFAULT_LOGIN_WAIT_MS = 3_000
+MAX_LOGIN_WAIT_MS = 15_000
 
 
 def load_profiles(path: str | None) -> dict[str, Any]:
@@ -162,16 +165,30 @@ def build_plan(document: dict[str, Any], target: dict[str, Any]) -> dict[str, An
         steps = profile.get("steps")
         if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_STEPS:
             raise InputError("android profile steps are invalid")
+        login_wait = profile.get("login_wait_ms", DEFAULT_LOGIN_WAIT_MS)
+        if (
+            isinstance(login_wait, bool)
+            or not isinstance(login_wait, int)
+            or not 0 <= login_wait <= MAX_LOGIN_WAIT_MS
+        ):
+            raise InputError("login_wait_ms is out of range")
         plan: dict[str, Any] = {
             "mode": "profile",
             "package": package,
             "activity": activity,
             "steps": [validate_step(step) for step in steps],
             "timeout_ms": _timeout(profile.get("timeout_ms")),
+            "login_wait_ms": login_wait,
         }
         verify = validate_verify(profile.get("verify"))
         if verify is not None:
             plan["verify"] = verify
         return plan
     # No profile: fall back to the generic heuristic (visible password field + log in button).
-    return {"mode": "heuristic", "package": package, "activity": activity, "timeout_ms": DEFAULT_TIMEOUT_MS}
+    return {
+        "mode": "heuristic",
+        "package": package,
+        "activity": activity,
+        "timeout_ms": DEFAULT_TIMEOUT_MS,
+        "login_wait_ms": DEFAULT_LOGIN_WAIT_MS,
+    }

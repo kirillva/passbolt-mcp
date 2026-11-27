@@ -14,6 +14,7 @@ sys.path.insert(0, str(SINKS))
 from passbolt_sinkkit.cli import DEFAULT_DATABASES, PROTOCOLS  # noqa: E402
 from passbolt_sinkkit.errors import (  # noqa: E402
     AuthRejected,
+    FormError,
     InputError,
     TargetError,
 )
@@ -334,3 +335,38 @@ def test_a_cold_start_device_is_retried_once(monkeypatch: pytest.MonkeyPatch) ->
     result = android_exec.run(TARGET, "operator", "s3cret", PROFILE_PLAN)
 
     assert result["status"] == "logged_in"
+
+
+def test_an_app_that_is_already_signed_in_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No login form on screen: say so at once instead of waiting out the classification."""
+    device = FakeDevice([HOME_SCREEN])
+    _fake_u2(monkeypatch, device)
+    started = __import__("time").monotonic()
+
+    with pytest.raises(FormError, match="login form is not visible"):
+        android_exec.run(TARGET, "operator", "s3cret", PROFILE_PLAN)
+
+    assert __import__("time").monotonic() - started < 2
+    assert device.typed == []  # nothing was typed into an unrelated screen
+
+
+def test_heuristic_without_a_password_field_does_not_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    device = FakeDevice([HOME_SCREEN])
+    _fake_u2(monkeypatch, device)
+    plan = android_guard.build_plan({"profiles": {}}, TARGET)
+
+    with pytest.raises(FormError):
+        android_exec.run(TARGET, "operator", "s3cret", plan)
+    assert device.typed == []
+
+
+def test_login_wait_ms_is_bounded() -> None:
+    profile = {
+        "match": {"package": PACKAGE},
+        "steps": [{"action": "fill", "selector": {"resource_id": LOGIN_ID}, "value_ref": "username"}],
+    }
+    plan = android_guard.build_plan({"profiles": {"a": {**profile, "login_wait_ms": 0}}}, TARGET)
+    assert plan["login_wait_ms"] == 0
+    for bad in (-1, 20_000, "3000", True):
+        with pytest.raises(InputError):
+            android_guard.build_plan({"profiles": {"a": {**profile, "login_wait_ms": bad}}}, TARGET)
