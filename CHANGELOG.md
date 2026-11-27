@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.5
+
+- The android sink retries the first device call once: right after a cold start uiautomator2's
+  on-device service answers "ApplicationSharedMemory not initialized", and a fresh connection
+  clears it. Without the retry the first delivery after booting the device failed as `no_target`.
+
 ## 0.10.4
 
 - An android record may name only the package: `android://ru.itserv.skr` and `android://ru.itserv.skr/`

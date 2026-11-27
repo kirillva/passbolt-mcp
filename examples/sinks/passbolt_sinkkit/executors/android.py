@@ -285,8 +285,15 @@ def run(
     connection = _connect(serial, adb)
     try:
         current = connection.app_current() or {}
-    except Exception as exc:  # noqa: BLE001
-        raise TargetError("android device is unavailable") from exc
+    except Exception:  # noqa: BLE001
+        # Right after a cold start the on-device service can answer "ApplicationSharedMemory not
+        # initialized"; a fresh connection clears it (the first call fails, the next one works).
+        time.sleep(1.5)
+        connection = _connect(serial, adb)
+        try:
+            current = connection.app_current() or {}
+        except Exception as exc:  # noqa: BLE001
+            raise TargetError("android device is unavailable") from exc
     package = str(current.get("package") or "")
     if package != plan["package"]:
         raise TargetError(

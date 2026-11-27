@@ -122,6 +122,9 @@ class FakeDevice:
         self.mask_get_text = False
 
     def app_current(self) -> dict[str, Any]:
+        if getattr(self, "fail_current_times", 0) > 0:
+            self.fail_current_times -= 1
+            raise RuntimeError("ApplicationSharedMemory not initialized")
         return {"package": self.package, "activity": ".SecurityActivity"}
 
     def dump_hierarchy(self, compressed: bool = False) -> str:
@@ -321,3 +324,13 @@ def test_a_different_activity_in_the_uri_falls_back_to_the_heuristic() -> None:
     }
     plan = android_guard.build_plan(document, {**TARGET, "path": "/OtherActivity"})
     assert plan["mode"] == "heuristic"
+
+
+def test_a_cold_start_device_is_retried_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    device = FakeDevice([LOGIN_SCREEN], on_click=lambda dev: dev.screens.__setitem__(0, HOME_SCREEN))
+    device.fail_current_times = 1
+    _fake_u2(monkeypatch, device)
+
+    result = android_exec.run(TARGET, "operator", "s3cret", PROFILE_PLAN)
+
+    assert result["status"] == "logged_in"
