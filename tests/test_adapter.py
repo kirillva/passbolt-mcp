@@ -1129,6 +1129,39 @@ def _sink_registry(path: Path, sinks: dict[str, Any]) -> None:
     path.chmod(0o600)
 
 
+def test_policy_without_sink_refs_allows_every_registered_sink(tmp_path: Path) -> None:
+    """Omitted sink_refs is not "none": the vault is the allowlist, per-sink schemes decide."""
+    registry = tmp_path / "sinks.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "sinks": {
+                    "login_fill": {"kind": "secure_fill", "uri_schemes": ["http", "https"]},
+                    "android_fill": {"kind": "secure_fill", "uri_schemes": ["android"]},
+                    "ssh_ops": {"kind": "secure_fill", "uri_schemes": ["ssh"]},
+                },
+                "policies": {
+                    "default": {
+                        "resource_ids": [],
+                        "folder_ids": [],
+                        "group_ids": [],
+                        "user_ids": [],
+                        "domain_hosts": [],
+                        "allow_create_resource": False,
+                        "allow_create_folder": False,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry.chmod(0o600)
+
+    policy = PassboltSinkDispatcher(registry).access_policy("default")
+
+    assert policy.sink_refs == frozenset({"login_fill", "android_fill", "ssh_ops"})
+
+
 def test_sink_registry_loads_strict_principal_policy(tmp_path: Path) -> None:
     registry = tmp_path / "sinks.json"
     registry.write_text(

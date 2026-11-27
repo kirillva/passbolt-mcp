@@ -1222,11 +1222,10 @@ class PassboltSinkDispatcher:
             "group_ids",
             "user_ids",
             "domain_hosts",
-            "sink_refs",
             "allow_create_resource",
             "allow_create_folder",
         }
-        optional_keys = {"resource_scope", "folder_scope", "allow_share_all"}
+        optional_keys = {"sink_refs", "resource_scope", "folder_scope", "allow_share_all"}
         if not required_keys <= set(raw) or set(raw) - required_keys - optional_keys:
             raise ProviderError("Passbolt principal policy schema is invalid")
 
@@ -1240,6 +1239,8 @@ class PassboltSinkDispatcher:
                 raise ProviderError("Passbolt principal policy schema is invalid") from exc
 
         domains = raw.get("domain_hosts")
+        # Omitted sink_refs means "every registered sink": the vault is the allowlist, and the
+        # per-sink uri_schemes already decide what each sink may talk to. An explicit list narrows.
         sinks = raw.get("sink_refs")
         resource_scope = raw.get("resource_scope", "explicit")
         folder_scope = raw.get("folder_scope", "explicit")
@@ -1250,13 +1251,15 @@ class PassboltSinkDispatcher:
         if (
             not isinstance(domains, list)
             or len(domains) > 200
-            or not isinstance(sinks, list)
-            or len(sinks) > 200
+            or (sinks is not None and (not isinstance(sinks, list) or len(sinks) > 200))
             or any(
                 not isinstance(host, str) or host != host.lower() or _host(f"https://{host}") != host
                 for host in domains
             )
-            or any(not isinstance(ref, str) or _SINK_REF_RE.fullmatch(ref) is None for ref in sinks)
+            or any(
+                not isinstance(ref, str) or _SINK_REF_RE.fullmatch(ref) is None
+                for ref in (sinks or [])
+            )
             or not isinstance(raw.get("allow_create_resource"), bool)
             or not isinstance(raw.get("allow_create_folder"), bool)
             or resource_scope not in {"explicit", "all"}
@@ -1265,6 +1268,8 @@ class PassboltSinkDispatcher:
         ):
             raise ProviderError("Passbolt principal policy schema is invalid")
         registered_sinks = self._load()
+        if sinks is None:
+            sinks = sorted(registered_sinks)
         if not set(sinks) <= set(registered_sinks):
             raise ProviderError("Passbolt principal policy names an unregistered sink")
         return PassboltAccessPolicy(

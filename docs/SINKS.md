@@ -205,6 +205,8 @@ uiautomator2 (`--device <serial>`, иначе `ANDROID_SERIAL`, иначе ед�
   `postgres`, `ssh`). Без ключа — `https` (+`http` при `PASSBOLT_ALLOW_INSECURE_HTTP=1`).
 - `allow_bare_host`: `true` разрешает записи вида `host[:port][/db]` без схемы; порт
   тогда берётся из `default_port`.
+- `sink_refs` в политике: если ключа нет — разрешены **все зарегистрированные синки** (vault и
+  схемы синков уже решают, куда можно, а куда нельзя); явный список сужает набор.
 - `domain_policy` в политике: `any` (по умолчанию) — vault сам является списком
   разрешённых адресов, запись и обновление URI не ограничены; `allowlist` — старое
   поведение со строгим HTTPS-origin. При `any` непустой `domain_hosts` остаётся

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.6
+
+- A policy may omit `sink_refs`; that now means **every registered sink** instead of "none". The
+  vault is the allowlist and each sink's `uri_schemes` already decide what it may talk to, so
+  postgres, android, ssh and http(s) work out of the box; an explicit list still narrows the set
+  for a principal that must not use, say, `ssh_adhoc`.
+
 ## 0.10.5
 
 - The android sink retries the first device call once: right after a cold start uiautomator2's
