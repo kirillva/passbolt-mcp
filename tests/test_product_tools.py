@@ -169,9 +169,16 @@ def test_doctor_skips_posix_mode_bits_for_job_dir_on_windows(tmp_path, monkeypat
     job_dir = tmp_path / "jobs"
     job_dir.mkdir()
     job_dir.chmod(0o755)
-    monkeypatch.setattr(doctor.os, "name", "nt")
+    # Patch the seam, not os.name: pathlib itself switches to WindowsPath when os.name is "nt".
+    monkeypatch.setattr(doctor, "_posix_mode_gate", lambda: False)
 
     status, valid = doctor._local_sink_paths({"job_dir": str(job_dir)})
 
     assert valid
     assert status == "registered_local_process_not_executed"
+
+    monkeypatch.setattr(doctor, "_posix_mode_gate", lambda: True)
+    assert doctor._local_sink_paths({"job_dir": str(job_dir)}) == (
+        "configuration_path_unavailable",
+        False,
+    )
