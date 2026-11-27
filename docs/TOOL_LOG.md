@@ -91,8 +91,9 @@ PASSBOLT_WRITE_APPROVAL=auto
    Такие случаи стоит вынести в `resources/guide/errors.md` и в скиллы-зеркала.
 3. `provider_disabled` / `permission denied` → чаще всего модель зовёт инструмент без
    нужного scope или до включения `PASSBOLT_USE_ENABLED`; это правило для `security.md`.
-4. `provider_rate_limited` → не ошибка инструкций, а сигнал про батчинг вызовов;
-   смотреть `retry_after_seconds` в ответе.
+4. `provider_rate_limited` → vault ответил `429` (соблюдайте `Retry-After`) или, если
+   оператор включил `PASSBOLT_RATE_LIMIT`, сработало его локальное окно; смотреть
+   `retry_after_seconds` в ответе.
 
 После правки гайдов не забыть зеркала в `skills/*/references/*.md` — их сверяет
 `scripts/token_budget.py`.

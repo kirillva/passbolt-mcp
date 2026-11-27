@@ -1,12 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.11.1
+
+Windows follow-ups, and documentation that stops blaming the vault for a local wait:
 
 - sinks: on Windows the server now passes the system environment roots (`SystemRoot`, `TEMP`, ...)
   to a sink process. Without them Winsock fails (`WinError 10106`), so `android_fill`, `login_fill`
   and the ssh sinks answered `no_target` / "device is unavailable" even when the target was ready.
 - doctor: the `job_dir` custody check no longer applies POSIX mode bits on Windows, where NTFS ACLs
   carry custody; `sink_configuration` no longer reports `false` for a private directory.
+- `docs/RUNTIME.md`: the local sliding window is an operator setting (`PASSBOLT_RATE_LIMIT`, off with
+  `0`); a vault `429` is always honoured. Removed the promise that a timeout sets a cooldown —
+  `PASSBOLT_FAILURE_COOLDOWN` defaults to `0`, so it does not — and documented that variable.
+- `docs/TOOL_LOG.md`: `provider_rate_limited` means a vault `429` (respect `Retry-After`) or the
+  operator's own window, not automatically "the model calls too often".
 
 ## 0.11.0
 
