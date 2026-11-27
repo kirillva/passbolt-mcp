@@ -29,6 +29,7 @@ from passbolt_sinkkit.errors import (  # noqa: E402
     exit_code_for,
 )
 from passbolt_sinkkit.executors import web as web_exec  # noqa: E402
+from passbolt_sinkkit.guards import android as android_guard  # noqa: E402
 from passbolt_sinkkit.guards import ssh as ssh_guard  # noqa: E402
 from passbolt_sinkkit.guards import web as web_guard  # noqa: E402
 from passbolt_sinkkit.guards.sql import validate_pg_job, validate_readonly_sql  # noqa: E402
@@ -712,8 +713,13 @@ def test_install_sinks_pins_entrypoint_and_bundle(tmp_path: Path) -> None:
     document = json.loads(config.read_text(encoding="utf-8"))
     assert document["version"] == 3
     for name, script in (("login_fill", "login_fill.py"), ("pg_ro", "pg_query.py")):
-        assert document["sinks"][name]["executable_sha256"] == _sha256(dest / script)
-        assert len(document["sinks"][name]["bundle_sha256"]) == 64
+        sink = document["sinks"][name]
+        assert sink["executable_sha256"] == _sha256(dest / script)
+        assert len(sink["bundle_sha256"]) == 64
+        # Cross-platform command: the interpreter comes first, the pinned script second.
+        assert sink["command"][0] == sys.executable
+        assert sink["command"][1] == str(dest / script)
+        assert sink["executable_index"] == 1
     assert stat.S_IMODE((dest / "login_fill.py").stat().st_mode) == 0o700
     assert (dest / "login_fill.py").read_text(encoding="utf-8").startswith(f"#!{sys.executable}")
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
@@ -799,3 +805,61 @@ def test_cli_composes_guard_executor_and_result(tmp_path: Path, monkeypatch) -> 
 def test_sink_package_has_no_import_side_effect_dependencies() -> None:
     module = importlib.util.find_spec("passbolt_sinkkit")
     assert module is not None
+
+
+def test_command_pins_the_script_that_follows_the_interpreter(tmp_path: Path) -> None:
+    python = str(Path(sys.executable).resolve())
+    script = tmp_path / "sink.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    script.chmod(0o755)
+    registry = tmp_path / "sinks.json"
+    _registry(
+        registry,
+        {
+            "shell": {
+                "kind": "secure_fill",
+                "command": [python, str(script)],
+                "executable_index": 1,
+                "executable_sha256": _sha256(script),
+            }
+        },
+    )
+    config = json.loads(registry.read_text(encoding="utf-8"))["sinks"]["shell"]
+    assert PassboltSinkDispatcher(registry)._command(config) == [python, str(script)]
+
+    broken = {**config, "executable_index": 5}
+    with pytest.raises(ProviderError, match="executable index"):
+        PassboltSinkDispatcher(registry)._command(broken)
+
+
+@pytest.mark.parametrize("guard", ["web", "ssh", "android"])
+def test_posix_mode_gates_do_not_apply_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, guard: str
+) -> None:
+    module = {"web": web_guard, "ssh": ssh_guard, "android": android_guard}[guard]
+    path = tmp_path / f"{guard}-profiles.json"
+    path.write_text('{"profiles": {}}', encoding="utf-8")
+    path.chmod(0o644)
+    with pytest.raises(Denied):
+        module.load_profiles(str(path))
+    monkeypatch.setattr(module, "_posix_mode_gate", lambda: False)
+    assert module.load_profiles(str(path)) == {}
+
+
+def test_web_lock_falls_back_to_msvcrt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, int]] = []
+    fake = type(
+        "FakeMsvcrt",
+        (),
+        {
+            "LK_LOCK": 2,
+            "LK_UNLCK": 0,
+            "locking": staticmethod(lambda fd, mode, count: calls.append((mode, count))),
+        },
+    )
+    monkeypatch.setattr(web_exec, "fcntl", None)
+    monkeypatch.setattr(web_exec, "msvcrt", fake)
+    with open(tmp_path / "lock", "a+", encoding="utf-8") as handle:
+        web_exec._lock(handle)
+        web_exec._unlock(handle)
+    assert [mode for mode, _ in calls] == [fake.LK_LOCK, fake.LK_UNLCK]

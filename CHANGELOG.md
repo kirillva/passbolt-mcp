@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.0
+
+Windows support, without giving up the POSIX install:
+
+- sink commands are `[interpreter, script, ...]` with `"executable_index": 1`: Windows has neither a
+  shebang nor an exec bit, and the pinned SHA-256 now names the script explicitly on both platforms.
+- the web sink's per-tab lock uses `fcntl` on POSIX and `msvcrt.locking` on Windows instead of
+  importing `fcntl` unconditionally (which broke every sink at import time on Windows).
+- profile custody checks (`web`, `ssh`, `android`) skip POSIX mode bits where they are meaningless
+  (Windows relies on the ACLs), exposed as a named `_posix_mode_gate()` seam instead of `os.name`.
+- the tool-error log writes without `O_NOFOLLOW` where the flag does not exist.
+- the sink pipe and the sink stdout are forced to UTF-8 (`encoding="utf-8"` in the parent,
+  `reconfigure` in the child) so a cp1251 console cannot corrupt the JSON result line.
+- `docs/WINDOWS.md` and `examples/windows/start-cdp-chrome.ps1`: prerequisites, `Scripts\python.exe`
+  paths, the launcher equivalent and the ACL-versus-mode differences.
+
 ## 0.10.9
 
 - `PASSBOLT_FAILURE_COOLDOWN` now defaults to **0**: a provider timeout or transport failure no

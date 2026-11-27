@@ -29,19 +29,47 @@ def _defaults(
     state: Path,
     sslmode: str | None,
     sslrootcert: str | None,
-    psql: str | None = None,
-    android_adb: str | None = None,
+    psql: str | None,
+    android_adb: str | None,
+    interpreters: dict[str, Path],
 ) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Sink definitions.
+
+    The command is always ``[interpreter, script, ...]``: Windows has neither a shebang nor an
+    exec bit, and the same registry then works on both platforms. ``executable_index`` names the
+    pinned script; the interpreter is operator-controlled (like ``psql``).
+    """
     results = dest / "results"
-    pg_command = [str(dest / "pg_query.py"), "--result-dir", str(results)]
-    check_command = [str(dest / "pg_check.py"), "--result-dir", str(results)]
-    for command in (pg_command, check_command):
-        if sslmode:
-            command += ["--sslmode", sslmode]
-        if sslrootcert:
-            command += ["--sslrootcert", sslrootcert]
-        if psql:
-            command += ["--psql", psql]
+
+    def command(name: str, script: str, *args: str) -> dict[str, Any]:
+        return {
+            "command": [str(interpreters[name]), str(dest / script), *args],
+            "executable_index": 1,
+        }
+
+    pg_args: list[str] = ["--result-dir", str(results)]
+    if sslmode:
+        pg_args += ["--sslmode", sslmode]
+    if sslrootcert:
+        pg_args += ["--sslrootcert", sslrootcert]
+    if psql:
+        pg_args += ["--psql", psql]
+
+    android_args: list[str] = ["--profiles", str(dest / "android-profiles.json")]
+    if android_adb:
+        android_args += ["--adb", android_adb]
+
+    ssh_args: list[str] = [
+        "--profiles",
+        str(dest / "ssh-profiles.json"),
+        "--known-hosts",
+        str(dest / "known_hosts"),
+        "--upload-root",
+        str(state / "upload"),
+        "--result-dir",
+        str(results),
+    ]
+
     return {
         "login_fill": (
             "login_fill.py",
@@ -49,11 +77,7 @@ def _defaults(
                 "kind": "secure_fill",
                 "timeout_seconds": 90,
                 "default_port": 443,
-                "command": [
-                    str(dest / "login_fill.py"),
-                    "--web-profiles",
-                    str(dest / "web-profiles.json"),
-                ],
+                **command("login_fill", "login_fill.py", "--web-profiles", str(dest / "web-profiles.json")),
             },
         ),
         "pg_ro": (
@@ -71,7 +95,7 @@ def _defaults(
                 "max_job_bytes": 65_536,
                 **({"sslmode": sslmode} if sslmode else {}),
                 **({"sslrootcert": sslrootcert} if sslrootcert else {}),
-                "command": pg_command,
+                **command("pg_ro", "pg_query.py", *pg_args),
             },
         ),
         "pg_exec": (
@@ -87,7 +111,7 @@ def _defaults(
                 "require_approval": "never",
                 **({"sslmode": sslmode} if sslmode else {}),
                 **({"sslrootcert": sslrootcert} if sslrootcert else {}),
-                "command": check_command,
+                **command("pg_exec", "pg_check.py", *pg_args),
             },
         ),
         "android_fill": (
@@ -99,12 +123,7 @@ def _defaults(
                 "uri_schemes": ["android"],
                 "requires_job": False,
                 "require_approval": "never",
-                "command": [
-                    str(dest / "android_fill.py"),
-                    "--profiles",
-                    str(dest / "android-profiles.json"),
-                ]
-                + (["--adb", android_adb] if android_adb else []),
+                **command("android_fill", "android_fill.py", *android_args),
             },
         ),
         "ssh_ops": (
@@ -119,17 +138,7 @@ def _defaults(
                 "require_approval": "never",
                 "job_dir": str(state / "jobs"),
                 "max_job_bytes": 65_536,
-                "command": [
-                    str(dest / "ssh_ops.py"),
-                    "--profiles",
-                    str(dest / "ssh-profiles.json"),
-                    "--known-hosts",
-                    str(dest / "known_hosts"),
-                    "--upload-root",
-                    str(state / "upload"),
-                    "--result-dir",
-                    str(results),
-                ],
+                **command("ssh_ops", "ssh_ops.py", *ssh_args),
             },
         ),
         "ssh_adhoc": (
@@ -144,18 +153,7 @@ def _defaults(
                 "require_approval": "always",
                 "job_dir": str(state / "jobs"),
                 "max_job_bytes": 65_536,
-                "command": [
-                    str(dest / "ssh_ops.py"),
-                    "--profiles",
-                    str(dest / "ssh-profiles.json"),
-                    "--known-hosts",
-                    str(dest / "known_hosts"),
-                    "--upload-root",
-                    str(state / "upload"),
-                    "--result-dir",
-                    str(results),
-                    "--adhoc",
-                ],
+                **command("ssh_adhoc", "ssh_ops.py", *ssh_args, "--adhoc"),
             },
         ),
     }
@@ -272,7 +270,13 @@ def main() -> int:
     interpreters = _python_map(args.python, Path(sys.executable))
     only = {item.strip() for item in args.only.split(",") if item.strip()}
     definitions = _defaults(
-        dest, state, args.pg_sslmode, args.pg_sslrootcert, args.psql, args.android_adb
+        dest,
+        state,
+        args.pg_sslmode,
+        args.pg_sslrootcert,
+        args.psql,
+        args.android_adb,
+        interpreters,
     )
     if only - set(definitions):
         raise SystemExit(f"unknown sink in --only: {', '.join(sorted(only - set(definitions)))}")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 from pathlib import Path
@@ -27,6 +28,15 @@ DEFAULT_LOGIN_WAIT_MS = 3_000
 MAX_LOGIN_WAIT_MS = 15_000
 
 
+def _posix_mode_gate() -> bool:
+    """POSIX mode bits gate custody on Linux; Windows relies on the profile's ACLs.
+
+    This is a named seam, not a global ``os.name`` check, so the behaviour can be exercised
+    in tests without pretending the whole interpreter is Windows.
+    """
+    return os.name != "nt"
+
+
 def load_profiles(path: str | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -39,7 +49,7 @@ def load_profiles(path: str | None) -> dict[str, Any]:
         raise Denied("android profiles file is unavailable") from exc
     if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PROFILE_BYTES:
         raise Denied("android profiles file is invalid")
-    if info.st_mode & 0o077:
+    if _posix_mode_gate() and info.st_mode & 0o077:
         raise Denied("android profiles file permissions are unsafe")
     try:
         document = json.loads(file.read_text(encoding="utf-8"))

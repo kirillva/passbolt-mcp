@@ -24,6 +24,8 @@ Try asking your assistant:
 | Check a protected endpoint | Use the built-in HTTPS probe with a selected vault credential; receive the outcome without the password or response body. |
 | Diagnose setup locally | Check key usability, the server public key and your access policy before connecting to the vault. |
 
+Windows notes (paths, GPG, browser launcher, ACL custody) are in [docs/WINDOWS.md](docs/WINDOWS.md).
+
 The [protected endpoint walkthrough](docs/SECRET_PROBE.md) includes private configuration, example requests and the local `passbolt-mcp-doctor` command.
 
 ## Why this MCP

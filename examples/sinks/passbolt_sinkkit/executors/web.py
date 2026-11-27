@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import fnmatch
 import json
 import os
@@ -27,6 +26,15 @@ from passbolt_sinkkit.errors import (
     TargetError,
 )
 from passbolt_sinkkit.guards.web import pick_page
+
+try:  # pragma: no cover - platform switch
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
+try:  # pragma: no cover - platform switch
+    import msvcrt
+except ImportError:  # POSIX
+    msvcrt = None  # type: ignore[assignment]
 
 DEFAULT_CDP = "http://127.0.0.1:9222"
 POLL_SECONDS = 0.4
@@ -236,6 +244,32 @@ def _focus_matches(cdp: Cdp, point: dict) -> bool:
     )
 
 
+def _lock(handle) -> None:
+    """Per-marker advisory lock: fcntl on POSIX, msvcrt on Windows."""
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return
+    if msvcrt is not None:
+        handle.seek(0)
+        if not handle.read(1):
+            handle.write("0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    # No advisory locking on this platform: the delivery still runs, the lock is best effort.
+
+
+def _unlock(handle) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:
+        with contextlib.suppress(OSError):
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 def _fill(cdp: Cdp, selector: str, text: str) -> None:
     point = _point(cdp, selector)
     cdp.click(point["x"], point["y"])
@@ -400,8 +434,9 @@ def run(
     lock = None
     if lock_path is not None:
         lock = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115
-        os.chmod(lock_path, 0o600)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        with contextlib.suppress(OSError):
+            os.chmod(lock_path, 0o600)
+        _lock(lock)
     try:
         with urllib.request.urlopen(f"{cdp_url}/json/list", timeout=5) as response:
             targets = json.load(response)
@@ -420,6 +455,5 @@ def run(
         raise SinkError("CDP endpoint is unavailable") from exc
     finally:
         if lock is not None:
-            with contextlib.suppress(OSError):
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            _unlock(lock)
             lock.close()

@@ -1293,7 +1293,13 @@ class PassboltSinkDispatcher:
         if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
             raise ProviderError("Passbolt secure sink command is invalid")
         command = [item.replace("{path}", str(out_file) if out_file else "") for item in value]
-        executable = Path(command[0])
+        index = config.get("executable_index", 0)
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(command):
+            raise ProviderError("Passbolt secure sink executable index is invalid")
+        if not Path(command[0]).is_absolute():
+            # A Windows sink command starts with the interpreter; a POSIX one with the script.
+            raise ProviderError("Passbolt secure sink command must start with an absolute path")
+        executable = Path(command[index])
         expected_hash = config.get("executable_sha256")
         if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
             raise ProviderError("Passbolt secure sink executable hash is not pinned")
@@ -1360,6 +1366,8 @@ class PassboltSinkDispatcher:
                 command,
                 input=stdin,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout,

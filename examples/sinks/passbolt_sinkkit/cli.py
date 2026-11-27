@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -60,12 +61,22 @@ def _values(envelope: dict[str, Any], username: str, password: str) -> dict[str,
     return {"username": username, "password": password, "totp": totp}
 
 
+def _utf8_stdio() -> None:
+    """The server speaks UTF-8 on the pipe; keep it whatever the OS console codepage is."""
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with suppress(Exception):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(protocol: str | None = None, argv: list[str] | None = None) -> int:
     if protocol is None:
         trailing = argv if argv is not None else sys.argv[1:]
         protocol = trailing[0] if trailing else "web"
         if protocol not in PROTOCOLS:
             raise SystemExit(f"unknown protocol: {protocol}")
+    _utf8_stdio()
     args = _parser(protocol).parse_args(argv)
     workdir = Path(sys.argv[0]).resolve().parent
     sink = "ssh_adhoc" if protocol == "ssh" and getattr(args, "adhoc", False) else PROTOCOLS[protocol]

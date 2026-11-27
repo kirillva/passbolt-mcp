@@ -147,7 +147,8 @@ def _append(path: Path, entry: dict[str, Any]) -> None:
         line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _rotate(path)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
     try:
         os.write(descriptor, (line + "\n").encode("utf-8"))
     finally:

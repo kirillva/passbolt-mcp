@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,16 @@ def _report(path: Path, payload: dict[str, Any]) -> None:
         os.close(descriptor)
 
 
+def _utf8_stdout() -> None:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        # Best effort on odd consoles: the server reads UTF-8.
+        with suppress(Exception):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_stdout()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result-dir", required=True)
     parser.add_argument("--psql")

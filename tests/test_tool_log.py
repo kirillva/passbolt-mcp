@@ -139,3 +139,13 @@ def test_a_broken_log_never_breaks_the_caller(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(tool_log.os, "open", explode)
     _record(state)  # must not raise
+
+
+def test_log_write_survives_a_platform_without_o_nofollow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows has no O_NOFOLLOW: the log must still be written, not raise AttributeError."""
+    monkeypatch.delattr(tool_log.os, "O_NOFOLLOW", raising=False)
+    _record(tmp_path / "state" / "passbolt.sqlite")
+    log = tmp_path / "state" / "tool-errors.jsonl"
+    assert log.exists() and _entries(log)
